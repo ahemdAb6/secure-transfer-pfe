@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # 1. خدمة الواجهة (Frontend + Reverse Proxy)
+  # هذا هو "الباب الرئيسي" للموقع
+  nginx:
+    build: ./frontend        # يبني تطبيق Vue.js
+    container_name: secure-transfer-frontend
+    ports:
+      - "80:80"              # يفتح الموقع على http://localhost
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf # إعدادات التوجيه
+    depends_on:
+      - backend              # ينتظر تشغيل الباكند
+
+  # 2. خدمة الباكند (Python API)
+  # لاحظ: حذفنا الـ ports لكي لا يمكن الوصول إليه مباشرة (أمان أكثر)
+  backend:
+    build: ./backend
+    container_name: secure-transfer-backend
+    volumes:
+      - ./backend:/app       # لسهولة التعديل دون إعادة البناء
+    restart: always
+    depends_on:
+      - redis
+      - clamav
+    environment:
+      - REDIS_HOST=redis
+      - CLAMAV_HOST=clamav
+
+  # 3. قاعدة البيانات (Redis)
+  redis:
+    image: redis:alpine
+    container_name: secure-transfer-redis
+    restart: always
+
+  # 4. مضاد الفيروسات (ClamAV)
+  clamav:
+    image: clamav/clamav:latest
+    container_name: secure-transfer-clamav
+    environment:
+      - CLAMAV_NO_FRESHCLAM=false # يحدث قاعدة البيانات تلقائياً
+    # لا نحتاج لفتح بورتات للخارج، فقط الباكند يراه داخلياً

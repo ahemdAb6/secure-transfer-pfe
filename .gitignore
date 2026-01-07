@@ -1,0 +1,32 @@
+# --- Global System Files ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# --- Docker ---
+.env
+
+# --- Backend (Python) ---
+backend/__pycache__/
+backend/*.pyc
+backend/venv/
+backend/env/
+
+# Important: Ignore uploaded files, but keep the folder structure
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# --- Frontend (Vue.js / Node) ---
+frontend/node_modules/
+frontend/dist/
+frontend/.output/
+frontend/.nuxt/
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# --- Database ---
+# If we map redis volume locally
+redis-data/
