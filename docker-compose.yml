@@ -1,18 +1,20 @@
-version: '3.8'
+
 
 services:
   # 1. خدمة الواجهة (Frontend + Reverse Proxy)
   # هذا هو "الباب الرئيسي" للموقع
   nginx:
-    build: ./frontend        # يبني تطبيق Vue.js
+    build: ./frontend
     container_name: secure-transfer-frontend
     ports:
-      - "80:80"              # يفتح الموقع على http://localhost
+      - "80:80"   # Pour la redirection
+      - "443:443" # ⚠️ NOUVEAU : Port HTTPS
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf # إعدادات التوجيه
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      # ⚠️ NOUVEAU : On monte le dossier des certificats
+      - ./nginx/certs:/etc/nginx/certs
     depends_on:
-      - backend              # ينتظر تشغيل الباكند
-
+      - backend
   # 2. خدمة الباكند (Python API)
   # لاحظ: حذفنا الـ ports لكي لا يمكن الوصول إليه مباشرة (أمان أكثر)
   backend:
