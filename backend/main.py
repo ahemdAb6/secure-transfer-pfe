@@ -4,13 +4,13 @@ import uuid
 import io
 import threading
 import time
-import hashlib  # Standard library for passwords (No installation needed)
+import hashlib
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request, Body
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from cryptography.fernet import Fernet
 
-# --- SAFE IMPORTS (Prevents crash if Docker libraries are missing) ---
+# --- SAFE IMPORTS (Docker Crash Prevention) ---
 try:
     import redis
 except ImportError:
@@ -29,7 +29,6 @@ try:
     from slowapi.errors import RateLimitExceeded
 except ImportError:
     print("⚠️ WARNING: 'slowapi' missing. Rate limiting disabled.")
-    # Dummy mocks to prevent crash
     def get_remote_address(r): return "127.0.0.1"
     class Limiter:
         def __init__(self, key_func): pass
@@ -42,6 +41,7 @@ except ImportError:
 # --- CONFIGURATION ---
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+ADMIN_SECRET = "admin" 
 
 # Connexion Redis
 r = None
@@ -61,7 +61,7 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Setup CORS (Crucial for Frontend)
+# Setup CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -91,7 +91,7 @@ def scan_file_for_virus(content: bytes):
         print(f"⚠️ Antivirus Warning: {e}")
 
 def hash_password(pwd: str) -> str:
-    """Securely hashes password using SHA256 (Standard, No Crash)"""
+    """Securely hashes password using SHA256"""
     return hashlib.sha256(pwd.encode()).hexdigest()
 
 # --- ROUTES ---
@@ -100,7 +100,57 @@ def hash_password(pwd: str) -> str:
 def read_root():
     return {"status": "Secure Server Running"}
 
-# NEW: Check if file exists and needs password
+# --- ADMIN ROUTES (NEW) ---
+
+@app.get("/admin/dashboard")
+async def admin_dashboard(key: str):
+    """Returns stats and list of active files for the Admin"""
+    if key != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Access Denied")
+    
+    if not r: raise HTTPException(500, "DB Offline")
+
+    active_files = []
+    keys = r.keys("*")
+    
+    for k in keys:
+        data = r.hgetall(k)
+        active_files.append({
+            "id": k,
+            "filename": data.get("filename", "Unknown"),
+            "sender": data.get("sender", "Anonymous"),
+            "downloads": f"{data.get('downloads_count', 0)}/{data.get('max_downloads', '?')}",
+            "protected": "Yes" if "password_hash" in data else "No"
+        })
+
+    return {
+        "server_status": "Online",
+        "total_active_files": len(active_files),
+        "files": active_files
+    }
+
+@app.delete("/admin/delete/{file_id}")
+async def admin_delete_file(file_id: str, key: str):
+    """Allows Admin to force delete a file"""
+    if key != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Access Denied")
+    
+    if not r: raise HTTPException(500, "DB Offline")
+
+    # Delete from Redis
+    if r.exists(file_id):
+        r.delete(file_id)
+    
+    # Delete from Disk
+    path = os.path.join(UPLOAD_DIR, f"{file_id}.enc")
+    if os.path.exists(path):
+        os.remove(path)
+        return {"status": "Deleted", "id": file_id}
+    else:
+        return {"status": "File already removed from disk (Redis cleared)"}
+
+# --- PUBLIC ROUTES ---
+
 @app.get("/check/{file_id}")
 async def check_file_info(file_id: str):
     if not r: raise HTTPException(status_code=500, detail="Database Offline")
@@ -116,23 +166,22 @@ async def upload_file(
     request: Request,
     file: UploadFile = File(...), 
     expiration: int = Form(86400),
-    password: str = Form(None)
+    password: str = Form(None),
+    sender_email: str = Form("Anonymous") # <--- NEW: Capture Sender Email
 ):
     if not r: raise HTTPException(status_code=500, detail="Database Offline")
 
     try:
-        # 1. Read
+        # 1. Read & Scan
         file_content = await file.read()
-
-        # 2. Virus Scan
         scan_file_for_virus(file_content)
 
-        # 3. Encrypt
+        # 2. Encrypt
         key = Fernet.generate_key()
         cipher = Fernet(key)
         encrypted_content = cipher.encrypt(file_content)
 
-        # 4. Save to Disk
+        # 3. Save
         file_id = str(uuid.uuid4())
         secure_filename = f"{file_id}.enc"
         file_location = os.path.join(UPLOAD_DIR, secure_filename)
@@ -140,19 +189,19 @@ async def upload_file(
         with open(file_location, "wb") as f:
             f.write(encrypted_content)
 
-        # 5. Metadata (Max Downloads & Password)
+        # 4. Metadata
         metadata = {
             "filename": file.filename,
             "key": key.decode(),
-            "max_downloads": 100, # Default Limit
-            "downloads_count": 0
+            "max_downloads": 100, 
+            "downloads_count": 0,
+            "sender": sender_email # <--- Storing who sent it
         }
         
-        # Add Password Hash if provided
         if password and password.strip():
             metadata["password_hash"] = hash_password(password.strip())
 
-        # 6. Save to Redis
+        # 5. Save Redis
         r.hset(file_id, mapping=metadata)
         r.expire(file_id, expiration)
 
@@ -162,10 +211,8 @@ async def upload_file(
             "message": "File encrypted and stored securely."
         }
 
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException as he: raise he
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/download/{file_id}")
 @limiter.limit("20/minute") 
@@ -187,27 +234,25 @@ async def download_file(
         if hash_password(password) != data["password_hash"]:
             raise HTTPException(403, "Wrong password")
 
-    # 3. Check Max Downloads
+    # 3. Check Limits
     current_count = int(data.get("downloads_count", 0))
     max_count = int(data.get("max_downloads", 100))
     
     if current_count >= max_count:
-        # Cleanup immediately if limit reached
+        # Cleanup
         r.delete(file_id)
         path = os.path.join(UPLOAD_DIR, f"{file_id}.enc")
         if os.path.exists(path): os.remove(path)
         raise HTTPException(410, "Download limit reached (File deleted)")
 
-    # 4. Increment Counter
+    # 4. Count & Decrypt
     r.hincrby(file_id, "downloads_count", 1)
 
-    # 5. Check Disk & Decrypt
     file_path = os.path.join(UPLOAD_DIR, f"{file_id}.enc")
     if not os.path.exists(file_path): raise HTTPException(404, "File missing from disk")
 
     try:
-        with open(file_path, "rb") as f:
-            encrypted_content = f.read()
+        with open(file_path, "rb") as f: encrypted_content = f.read()
         cipher = Fernet(data['key'].encode())
         decrypted_content = cipher.decrypt(encrypted_content)
     except:
@@ -219,28 +264,21 @@ async def download_file(
         headers={"Content-Disposition": f'attachment; filename="{data["filename"]}"'}
     )
 
-# --- BACKGROUND CLEANUP TASK ---
-CLEANUP_INTERVAL = 300 # 5 Minutes
+# --- CLEANUP TASK ---
+CLEANUP_INTERVAL = 300 
 
 def cleanup_expired_files():
-    """Deletes physical files if they are no longer in Redis (Expired or Max Downloads reached)"""
     while True:
         try:
             if r:
                 for filename in os.listdir(UPLOAD_DIR):
                     if not filename.endswith(".enc"): continue
-
                     file_id = filename.replace(".enc", "")
-                    # If ID is not in Redis, it is expired/deleted
                     if not r.exists(file_id):
                         path = os.path.join(UPLOAD_DIR, filename)
-                        try:
-                            os.remove(path)
-                            print(f"🧹 Cleanup: Deleted expired file {filename}")
+                        try: os.remove(path); print(f"🧹 Deleted: {filename}")
                         except OSError: pass
-        except Exception as e:
-            print(f"⚠️ Cleanup Error: {e}")
-            
+        except Exception: pass
         time.sleep(CLEANUP_INTERVAL)
 
 @app.on_event("startup")
