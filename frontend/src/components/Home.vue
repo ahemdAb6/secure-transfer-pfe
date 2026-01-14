@@ -139,8 +139,8 @@ const performDownload = async (id, pwd) => {
     showToast("⬇️ Download started...")
   } catch (e) { error.value = e.message; showToast("❌ " + e.message); if (e.message.includes("Password")) { showPasswordModal.value = true } } finally { loading.value = false }
 }
-const startScanner = () => { showScanner.value = true; error.value = null; setTimeout(() => { if (html5QrCode) { try { html5QrCode.stop(); html5QrCode.clear() } catch(e){} } html5QrCode = new Html5Qrcode("reader"); html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, (decodedText) => { stopScanner(); const cleanID = extractId(decodedText); fileIdInput.value = cleanID; initiateDownload(cleanID) }, (err) => {}).catch(err => { showScanner.value = false; showToast("❌ Camera Error") }) }, 300) }
-const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { html5QrCode.clear(); showScanner.value = false }).catch(() => { showScanner.value = false }) } else { showScanner.value = false } }
+
+
 </script>
 
 <template>
@@ -245,7 +245,7 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
                 <h2>Download File</h2>
                 <div class="dl-input-row">
                    <input v-model="fileIdInput" @input="handleInputPaste" placeholder="Enter File ID or Link" class="modern-input lg">
-                   <button class="scan-btn" @click="startScanner">📷</button>
+                   
                 </div>
                 <button class="action-btn green" @click="() => initiateDownload()" :disabled="loading">{{ loading ? 'Searching...' : 'Download' }}</button>
                 <div v-if="error" class="error-msg">{{ error }}</div>

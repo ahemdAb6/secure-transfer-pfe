@@ -1,6 +1,7 @@
 import shutil
 import os
 import uuid
+
 import io
 import threading
 import time
@@ -10,7 +11,15 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request, Bod
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from cryptography.fernet import Fernet
+try:
+    from dotenv import load_dotenv
+    load_dotenv() # Tries to load the .env file
+except ImportError:
+    # If the library is missing, we just ignore it. 
+    # Docker usually injects variables automatically anyway.
+    print("⚠️ WARNING: 'python-dotenv' library missing. Using system defaults.")
 
+# ... continue with the rest of your imports ...
 # --- SAFE IMPORTS ---
 try:
     import redis
@@ -42,21 +51,29 @@ except ImportError:
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ADMIN CREDENTIALS
-ADMIN_EMAIL = "admin@axelites.com"
-ADMIN_PASS = "admin123"
-ADMIN_SECRET = "admin123" # Master Key
+# ADMIN CREDENTIALS (PRO TIP: Use os.getenv in production)
+# --- CONFIGURATION ---
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Use os.getenv to read from the .env file
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@axelites.com") 
+ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin123")
+
+# This enables switching between 'localhost' (testing) and 'redis' (docker)
+REDIS_HOST = os.getenv("REDIS_HOST", "redis") 
 
 # Connexion Redis
 r = None
 if redis:
     try:
-        r = redis.Redis(host='redis', port=6379, decode_responses=True)
+        # Use the variable REDIS_HOST here
+        r = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
         r.ping()
         print("✅ Redis Connected")
     except:
         print("⚠️ Redis Connection Failed")
-
 # --- INIT APP ---
 app = FastAPI()
 limiter = Limiter(key_func=get_remote_address)
@@ -65,11 +82,15 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://localhost",
+        "http://localhost"
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
 
 # --- HELPERS ---
 
@@ -96,6 +117,7 @@ def verify_admin(key: str) -> bool:
 def scan_file_for_virus(content: bytes):
     if not clamd: return
     try:
+        # Tries to connect to ClamAV container on port 3310
         cd = clamd.ClamdNetworkSocket('clamav', 3310)
         if cd.ping() != 'PONG': return 
         scan_result = cd.instream(io.BytesIO(content))
@@ -129,7 +151,6 @@ async def login(email: str = Form(...), password: str = Form(...)):
     if email == ADMIN_EMAIL and password == ADMIN_PASS:
         token = str(uuid.uuid4())
         if r: 
-            # Store simply the email. verify_admin will check if this email is ADMIN_EMAIL
             r.setex(f"session:{token}", 86400, ADMIN_EMAIL)
         return {"message": "Admin", "token": token, "email": email, "role": "ADMIN"}
 
@@ -153,13 +174,23 @@ async def login(email: str = Form(...), password: str = Form(...)):
     
     return {"message": "Login successful", "token": token, "email": email, "role": "USER"}
 
+# Change 'Form' to 'Body' and add 'embed=True'
 @app.post("/auth/logout")
-async def logout(session_token: str = Form(...)):
-    if r: r.delete(f"session:{session_token}")
+async def logout(request: Request):
+    # This reads JSON or Form data manually to avoid 422 errors
+    try:
+        body = await request.json()
+        token = body.get("session_token")
+    except:
+        form = await request.form()
+        token = form.get("session_token")
+        
+    if token and r: 
+        r.delete(f"session:{token}")
+        
     return {"message": "Logged out"}
-
 # ==========================================
-# 🛡️ ADMIN ROUTES
+# 🛡️ ADMIN ROUTES (UPDATED WITH ANALYTICS)
 # ==========================================
 
 @app.get("/admin/dashboard")
@@ -167,32 +198,71 @@ async def admin_dashboard(key: str):
     if not verify_admin(key): raise HTTPException(403, "Access Denied")
     if not r: raise HTTPException(500, "DB Offline")
 
-    # 1. Files
     files = []
+    user_usage = {}  # Tracks how many bytes each user used
+    type_counts = {} # Tracks file extensions (pdf, jpg, etc.)
+
+    # 1. Process Files & Calculate Usage
     for k in r.keys("*"):
         if len(k) > 30 and "user:" not in k and "session:" not in k and "limit:" not in k:
             d = r.hgetall(k)
+            
+            # --- ANALYTICS LOGIC ---
+            f_size = int(d.get("size", 0))
+            sender = d.get("sender", "Unknown")
+            fname = d.get("filename", "unknown")
+            
+            # Sum usage per user
+            user_usage[sender] = user_usage.get(sender, 0) + f_size
+            
+            # Count file types
+            ext = fname.split('.')[-1].lower() if '.' in fname else 'other'
+            type_counts[ext] = type_counts.get(ext, 0) + 1
+            # -----------------------
+
             files.append({
                 "id": k, 
-                "filename": d.get("filename"), 
-                "sender": d.get("sender"),
+                "filename": fname, 
+                "sender": sender,
+                "size_mb": round(f_size / (1024 * 1024), 2), # Send size to UI
                 "downloads": f"{d.get('downloads_count')}/{d.get('max_downloads')}",
                 "protected": "Yes" if "password_hash" in d else "No"
             })
 
-    # 2. Users (Fixed Loop for Robustness)
+    # 2. Process Users & Add Storage Info
     users = []
     for k in r.scan_iter("user:*"):
         if isinstance(k, bytes): k = k.decode()
         u = r.hgetall(k)
         if u and "email" in u:
+            email = u["email"]
+            # Get bytes used from our calculation above, convert to MB
+            used_mb = round(user_usage.get(email, 0) / (1024 * 1024), 2)
+            
             users.append({
-                "email": u["email"],
+                "email": email,
                 "status": u.get("status", "PENDING"),
-                "limit": u.get("limit", 50)
+                "limit": u.get("limit", 50),
+                "storage_used_mb": used_mb # NEW FIELD
             })
 
-    return {"total_active_files": len(files), "status": "Online", "files": files, "users": users}
+    # 3. Global Server Disk Stats
+    total, used, free = shutil.disk_usage(UPLOAD_DIR)
+    disk_info = {
+        "total_gb": round(total / (1024**3), 2),
+        "used_gb": round(used / (1024**3), 2),
+        "free_gb": round(free / (1024**3), 2),
+        "percent_full": round((used / total) * 100, 1)
+    }
+
+    return {
+        "status": "Online",
+        "total_active_files": len(files),
+        "disk_info": disk_info,   # NEW: Server Health
+        "file_types": type_counts, # NEW: Pie Chart Data
+        "files": files, 
+        "users": users
+    }
 
 @app.post("/admin/user_action")
 async def user_action(key: str = Body(...), email: str = Body(...), action: str = Body(...)):
@@ -270,6 +340,8 @@ async def upload_file(
 
     try:
         file_content = await file.read()
+        file_size = len(file_content) # Capture Size
+
         scan_file_for_virus(file_content)
 
         key = Fernet.generate_key()
@@ -285,7 +357,8 @@ async def upload_file(
             "key": key.decode(),
             "max_downloads": 100,
             "downloads_count": 0,
-            "sender": sender_email 
+            "sender": sender_email,
+            "size": file_size # Save Size to DB
         }
         if password and password.strip():
             metadata["password_hash"] = hash_password(password.strip())

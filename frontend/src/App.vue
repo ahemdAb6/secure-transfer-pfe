@@ -22,7 +22,6 @@ const downloadPassword = ref('')
 const expirationTime = ref(86400)
 const magicLink = ref('') 
 const toast = ref({ show: false, message: '' })
-const showScanner = ref(false)
 const showPasswordModal = ref(false)
 const currentDownloadId = ref(null)
 const sentHistory = ref([])
@@ -491,17 +490,7 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
     </Transition>
 
     <!-- MODAL: SCANNER -->
-    <Transition name="modal">
-      <div v-if="showScanner" class="modal-backdrop">
-        <div class="modal-card scanner-modal">
-          <div class="modal-header">
-            <h3>Scan QR Code</h3>
-            <button @click="stopScanner">✕</button>
-          </div>
-          <div id="reader" class="scanner-box"></div>
-        </div>
-      </div>
-    </Transition>
+    
 
   </div>
 </template>
