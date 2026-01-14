@@ -1,7 +1,9 @@
 import shutil
 import os
 import uuid
-
+import requests
+from pypdf import PdfReader  # <--- MAKE SURE THIS IS HERE
+import json
 import io
 import threading
 import time
@@ -33,6 +35,7 @@ except ImportError:
     clamd = None
     print("⚠️ WARNING: 'clamd' library missing.")
 
+
 try:
     from slowapi import Limiter, _rate_limit_exceeded_handler
     from slowapi.util import get_remote_address
@@ -60,6 +63,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@axelites.com") 
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin123")
+
 
 # This enables switching between 'localhost' (testing) and 'redis' (docker)
 REDIS_HOST = os.getenv("REDIS_HOST", "redis") 
@@ -125,8 +129,104 @@ def scan_file_for_virus(content: bytes):
             raise HTTPException(status_code=400, detail=f"VIRUS DETECTED: {scan_result['stream'][1]}")
     except HTTPException as he: raise he
     except Exception: pass
+# --- OLLAMA AI CONFIGURATION ---
+OLLAMA_URL = "http://ollama:11434/api/generate"
+AI_MODEL = "qwen2.5:0.5b"
 
-# ==========================================
+def scan_with_ollama(content: bytes, filename: str):
+    """
+    Extracts text (from TXT or PDF) and scans it with AI.
+    """
+    text_preview = ""
+
+    # --- 1. EXTRACT TEXT BASED ON FILE TYPE ---
+    try:
+        if filename.endswith(".pdf"):
+            # It is a PDF: Read only the first 2 pages
+            pdf_file = io.BytesIO(content)
+            reader = PdfReader(pdf_file)
+            
+            if len(reader.pages) > 0:
+                text_preview += reader.pages[0].extract_text()
+            if len(reader.pages) > 1:
+                text_preview += " " + reader.pages[1].extract_text()
+        else:
+            # It is a Text file
+            text_preview = content.decode('utf-8')
+
+    except Exception as e:
+        print(f"⚠️ Could not read file text: {e}")
+        return "SAFE" 
+
+    # Limit to 1000 characters for Speed (Start + End)
+    if len(text_preview) > 1000:
+        text_preview = text_preview[:500] + "\n... [SKIPPED] ...\n" + text_preview[-500:]
+    else:
+        text_preview = text_preview[:1000]
+
+    # --- 2. THE PROMPT (Qwen 2.5) ---
+    # --- 3. THE ENTERPRISE PROMPT (Qwen 2.5) ---
+    # --- 3. THE "STRICT" ENTERPRISE PROMPT ---
+    prompt = f"""
+    Analyze this text for Security Breaches.
+    
+    TEXT:
+    "{text_preview}"
+    
+    INSTRUCTIONS:
+    1. **SAFE CONTENT (Allow these):**
+       - Resume / CV / Job Application.
+       - Source Code / Dockerfile / Configs (UNLESS they contain real passwords).
+       - Legal Disclaimers in email footers.
+    
+    2. **DANGEROUS CONTENT (BLOCK these):**
+       - "CONFIDENTIAL" or "INTERNAL USE ONLY" in the **Header** or **Title**.
+       - Real Credentials (e.g., 'User: admin', 'Password: ...').
+       - Database dumps or private customer lists.
+
+    DECISION LOGIC:
+    - Does this contain a SECRET? -> Reply "BLOCK".
+    - Is it just code or a CV? -> Reply "SAFE".
+    
+    OUTPUT:
+    Reply with ONE WORD ONLY: "SAFE" or "BLOCK".
+    """
+    
+    try:
+        response = requests.post(OLLAMA_URL, json={
+            "model": AI_MODEL,
+            "prompt": prompt,
+            "stream": False
+        }, timeout=20)
+        
+        if response.status_code == 200:
+            result = response.json().get("response", "").strip().upper()
+            
+            # Clean punctuation
+            import string
+            result_clean = result.translate(str.maketrans('', '', string.punctuation))
+
+            print(f"🔍 ANALYZING: {filename}")
+            print(f"🤖 AI RAW OUTPUT: '{result}'")
+
+            # Decision Logic
+            if result_clean == "BLOCK" or result_clean.startswith("BLOCK "):
+                print(f"🚫 AI VERDICT: BLOCKED")
+                # This raises the error to stop the upload immediately
+                msg = "⚠️ AI SECURITY ALERT: Sensitive Data Detected."
+                raise HTTPException(status_code=400, detail=msg)
+            
+            # Extra Keyword Safety
+            if "CONFIDENTIAL" in result_clean and "NOT CONFIDENTIAL" not in result_clean:
+                 print(f"🚫 AI VERDICT: BLOCKED (Keyword Found)")
+                 raise HTTPException(status_code=400, detail="⚠️ AI SECURITY ALERT: Confidential Data Found.")
+                 
+            print(f"✅ AI VERDICT: SAFE")
+            return "SAFE"
+
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ Warning: AI Service error: {e}. Allowing file.")
+        return "SAFE"
 # 🔐 AUTH ROUTES
 # ==========================================
 
@@ -310,7 +410,8 @@ async def check_file_info(file_id: str):
 @app.post("/upload")
 @limiter.limit("10/minute") 
 async def upload_file(
-    file: UploadFile = File(...), 
+    request: Request,
+    file: UploadFile = File(...),
     expiration: int = Form(86400),
     password: str = Form(None),
     session_token: str = Form(...) 
@@ -339,26 +440,36 @@ async def upload_file(
         r.expire(limit_key, 86400)
 
     try:
+        # 1. Read the file
         file_content = await file.read()
-        file_size = len(file_content) # Capture Size
+        file_size = len(file_content) 
 
+        # 2. Virus Scan
         scan_file_for_virus(file_content)
 
+        # 3. AI Brain Scan (Only for files < 1MB to keep it fast)
+        if file_size < 1024 * 1024:
+            # 👇 FIXED: Changed 'content' to 'file_content'
+            scan_with_ollama(file_content, file.filename) 
+
+        # 4. Encryption (Fernet)
         key = Fernet.generate_key()
         cipher = Fernet(key)
         encrypted_content = cipher.encrypt(file_content)
 
+        # 5. Save to Disk
         file_id = str(uuid.uuid4())
         with open(os.path.join(UPLOAD_DIR, f"{file_id}.enc"), "wb") as f:
             f.write(encrypted_content)
 
+        # 6. Save Metadata to Redis
         metadata = {
             "filename": file.filename,
             "key": key.decode(),
             "max_downloads": 100,
             "downloads_count": 0,
             "sender": sender_email,
-            "size": file_size # Save Size to DB
+            "size": file_size 
         }
         if password and password.strip():
             metadata["password_hash"] = hash_password(password.strip())
@@ -368,7 +479,11 @@ async def upload_file(
 
         return {"id": file_id, "filename": file.filename, "message": "Success"}
 
-    except Exception as e: raise HTTPException(500, str(e))
+    # Catch Security Blocks explicitly to show the right error message
+    except HTTPException as he:
+        raise he 
+    except Exception as e: 
+        raise HTTPException(500, f"Server Error: {str(e)}")
 
 @app.post("/download/{file_id}")
 @limiter.limit("20/minute") 

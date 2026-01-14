@@ -3,5 +3,8 @@ uvicorn
 python-multipart
 redis
 cryptography
-clamd
 python-dotenv
+slowapi
+clamd
+requests
+pypdf

@@ -1,45 +1,58 @@
-
+version: '3.8'
 
 services:
-  # 1. خدمة الواجهة (Frontend + Reverse Proxy)
-  # هذا هو "الباب الرئيسي" للموقع
+  # 1. Frontend (Nginx)
   nginx:
     build: ./frontend
     container_name: secure-transfer-frontend
     ports:
-      - "80:80"   # Pour la redirection
-      - "443:443" # ⚠️ NOUVEAU : Port HTTPS
+      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      # ⚠️ NOUVEAU : On monte le dossier des certificats
       - ./nginx/certs:/etc/nginx/certs
     depends_on:
       - backend
-  # 2. خدمة الباكند (Python API)
-  # لاحظ: حذفنا الـ ports لكي لا يمكن الوصول إليه مباشرة (أمان أكثر)
+
+  # 2. Backend (Python API)
   backend:
     build: ./backend
     container_name: secure-transfer-backend
     volumes:
-      - ./backend:/app       # لسهولة التعديل دون إعادة البناء
+      - ./backend:/app
     restart: always
     depends_on:
       - redis
       - clamav
+      - ollama  # 👇 ADDED: Wait for AI to start
     environment:
       - REDIS_HOST=redis
       - CLAMAV_HOST=clamav
+      - OLLAMA_HOST=http://ollama:11434 # Optional helper var
 
-  # 3. قاعدة البيانات (Redis)
+  # 👇 ADDED: AI Service (Ollama)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: secure_ai_brain
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: always
+
+  # 3. Redis
   redis:
     image: redis:alpine
     container_name: secure-transfer-redis
     restart: always
 
-  # 4. مضاد الفيروسات (ClamAV)
+  # 4. ClamAV
   clamav:
     image: clamav/clamav:latest
     container_name: secure-transfer-clamav
     environment:
-      - CLAMAV_NO_FRESHCLAM=false # يحدث قاعدة البيانات تلقائياً
-    # لا نحتاج لفتح بورتات للخارج، فقط الباكند يراه داخلياً
+      - CLAMAV_NO_FRESHCLAM=false
+
+# 👇 ADDED: Volume for AI Data
+volumes:
+  ollama_data:
