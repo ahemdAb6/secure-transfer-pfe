@@ -24,19 +24,15 @@ services:
     depends_on:
       - redis
       - clamav
-      - ollama
-    
-    # 👇 THIS IS THE FIX: Load all variables from your .env file
+      - ollama  # 👇 ADDED: Wait for AI to start
     env_file:
-      - .env
-
+      - ./.env
     environment:
       - REDIS_HOST=redis
       - CLAMAV_HOST=clamav
-      - OLLAMA_HOST=http://ollama:11434
-      # I removed the manual SMTP lines because 'env_file' loads them automatically now!
+      
 
-  # 3. AI Service (Ollama)
+  # 👇 ADDED: AI Service (Ollama)
   ollama:
     image: ollama/ollama:latest
     container_name: secure_ai_brain
@@ -46,18 +42,19 @@ services:
       - "11434:11434"
     restart: always
 
-  # 4. Redis
+  # 3. Redis
   redis:
     image: redis:alpine
     container_name: secure-transfer-redis
     restart: always
 
-  # 5. ClamAV
+  # 4. ClamAV
   clamav:
     image: clamav/clamav:latest
     container_name: secure-transfer-clamav
     environment:
       - CLAMAV_NO_FRESHCLAM=false
 
+# 👇 ADDED: Volume for AI Data
 volumes:
   ollama_data:
