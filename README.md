@@ -1,23 +1,39 @@
-# 🔒 SecureTransfer - Self-Hosted File Sharing Platform
+# 🔒 SecureTransfer - AI-Powered Secure File Sharing
 
-> **Stage Project** | Secure, Ephemeral, and Private File Sharing "à la WeTransfer".
+> **PFE Project (Stage)** | Developed for **Axelites** | 2026
 
 ## 📖 Overview
-**SecureTransfer** is a containerized, self-hosted platform designed for securely sharing sensitive documents. Unlike public cloud solutions, this project ensures **Data Sovereignty** by keeping files within the company's infrastructure.
+**SecureTransfer** is an enterprise-grade, self-hosted file sharing platform designed for high-security environments. It acts as a private alternative to WeTransfer, ensuring **Data Sovereignty** and **Zero-Trust Security**.
 
-It features **End-to-End Encryption (AES-256)**, **Automatic Malware Scanning**, **Password Protection**, and **Auto-Expiration** logic to comply with privacy standards (GDPR).
+Unlike standard file sharing tools, SecureTransfer employs a **Multi-Layered Security Engine**:
+1.  **Antivirus:** Scans binary files for malware using **ClamAV**.
+2.  **AI Data Loss Prevention (DLP):** Uses a local AI Model (**Qwen 2.5**) to read documents and block sensitive data leaks (passwords, confidential keys, internal secrets) *before* they leave the network.
+3.  **Encryption:** Military-grade **AES-256** encryption.
 
 ---
 
 ## 🚀 Key Features
 
-*   **🛡️ Security First:** Files are encrypted using **Fernet (AES-256)** before storage. Even the admin cannot read them without the unique key generated per transfer.
-*   **🦠 Antivirus Integration:** Real-time stream scanning using **ClamAV**. Malicious files are rejected immediately before hitting the disk.
-*   **🔑 Access Control:** Optional **Password Protection** (hashed via SHA-256) for transfers. The receiver must enter the password to decrypt the file.
-*   **⏳ Ephemeral Storage:** Files are automatically purged after a set duration (TTL) or when the download limit is reached.
-*   **🚦 Rate Limiting:** Integrated **DDoS protection** limits uploads/downloads per IP address to prevent abuse.
-*   **👤 Admin Dashboard:** A hidden administration interface to monitor active files and force-delete content if necessary.
-*   **🐳 Fully Dockerized:** Orchestrated via Docker Compose with Nginx as a Secure Reverse Proxy (HTTPS).
+### 🛡️ 1. Intelligent Security Core
+*   **🤖 AI Data Leak Detection:** Integrated with **Ollama (Qwen 2.5)**. The system analyzes text content (TXT, PDF) to detect and block:
+    *   "CONFIDENTIAL" / "INTERNAL USE ONLY" documents.
+    *   Leaked Credentials (API Keys, Passwords).
+    *   PII (Personal Identifiable Information) leaks.
+    *   *Smart Filtering:* Distinguishes between safe Source Code/CVs and actual security threats.
+*   **🦠 Real-Time Antivirus:** Integrated with **ClamAV**. Scans every byte stream; viruses are rejected immediately.
+*   **🔐 End-to-End Encryption:** Files are encrypted with **Fernet (AES-256)**. The server *never* stores unencrypted files.
+
+### 👤 2. User Management & Auth
+*   **Registration System:** Users can sign up, but accounts remain **PENDING** until Admin approval (Zero-Trust).
+*   **Role-Based Access:**
+    *   **Users:** Can upload/download based on daily quotas.
+    *   **Admins:** Full control over users, files, and server health.
+*   **Banning System:** Admins can instantly **BAN** users who violate security policies.
+
+### 📊 3. Advanced Admin Dashboard
+*   **Live Analytics:** Monitor Disk Usage, File Type distribution, and User Storage consumption.
+*   **Audit Logs:** Track who uploaded what file and when.
+*   **User Control:** Approve new registrations or Ban suspicious accounts with one click.
 
 ---
 
@@ -25,12 +41,12 @@ It features **End-to-End Encryption (AES-256)**, **Automatic Malware Scanning**,
 
 | Component | Technology | Role |
 | :--- | :--- | :--- |
-| **Frontend** | Vue.js 3 + Vite | Glassmorphism UI (Single Page App) |
-| **Backend** | Python FastAPI | Async API, Encryption Logic, Rate Limiting |
-| **Database** | Redis | Metadata storage & Auto-expiration (TTL) |
-| **Security** | ClamAV | Antivirus Engine |
-| **Proxy** | Nginx | Reverse Proxy & SSL/TLS Termination |
-| **DevOps** | Docker Compose | Container Orchestration |
+| **Frontend** | Vue.js 3 + Tailwind CSS | Responsive, Modern UI |
+| **Backend** | Python FastAPI | Async API, Security Logic, Rate Limiting |
+| **AI Brain** | **Ollama + Qwen 2.5 (0.5B)** | Local LLM for Data Loss Prevention (DLP) |
+| **Database** | Redis | High-speed Metadata, Session Mgmt & Caching |
+| **Antivirus** | ClamAV | Malware Engine |
+| **Infrastructure** | Docker Compose | Container Orchestration |
 
 ---
 
@@ -41,60 +57,89 @@ It features **End-to-End Encryption (AES-256)**, **Automatic Malware Scanning**,
 *   Git installed.
 
 ### Quick Start
+
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/ahemdAb6/secure-transfer-pfe.git
     cd secure-transfer-pfe
     ```
 
-2.  **Run with Docker:**
+2.  **Configure Environment:**
+    *   Create a `.env` file in the root directory.
+    *   Define your `ADMIN_EMAIL` and `ADMIN_PASS` (See `.env.example`).
+
+3.  **Start the Server:**
     ```bash
     docker compose up --build -d
     ```
 
-3.  **Access the App:**
-    Open your browser and go to:
-    👉 **https://localhost**
-    *(Note: You will see a browser warning because we use a Self-Signed Certificate for local development. Click "Advanced" -> "Proceed" to access the secure HTTPS site).*
+4.  **🧠 Initialize the AI Brain (Critical Step):**
+    *The AI model runs locally inside Docker. You must download it once.*
+    ```bash
+    docker exec -it secure_ai_brain ollama run qwen2.5:0.5b
+    ```
+    *(Wait for the download to finish, then type `/bye` to exit).*
 
-    > **Important:** Please wait 2-3 minutes on the very first run for ClamAV to update its virus database.
+5.  **Access the Application:**
+    *   **Web App:** https://localhost
+    *   *(Accept the self-signed certificate warning)*
 
 ---
 
 ## 👨‍💻 Usage Guide
 
-### Sending a File
-1.  Drag and drop a file.
-2.  Enter your **Sender Email** (Mandatory).
-3.  (Optional) Set a **Password** and Expiration time.
-4.  Share the generated **Magic Link** or **QR Code**.
+### 1. Registration (First Time)
+1.  Go to **Register**.
+2.  Create an account.
+3.  **Note:** You cannot log in yet! An **Admin** must approve your account first.
 
-### Receiving a File
-1.  Open the link or scan the QR Code.
-2.  If the file is password-protected, a secure modal will ask for the credentials.
-3.  The file is decrypted in the browser and downloaded.
+### 2. Admin Approval
+1.  Log in with the **Master Admin credentials** (Defined in your `.env` file).
+    *   *Default:* Check `docker-compose.yml` or your environment variables.
+2.  Go to the **Admin Dashboard**.
+3.  Find the new user in the list and click **"APPROVE"**.
 
-### 🛡️ Admin Portal (Internal Use)
-To access the administration dashboard:
-1.  Click the **"Admin Portal"** link (or the Copyright text) in the footer.
-2.  Enter the Master Key: `admin123`
-3.  View active transfers and delete files manually.
+### 3. Sending a File
+1.  Log in as a User.
+2.  Drag & Drop a file.
+3.  **The Security Scan runs automatically:**
+    *   If a **Virus** is found -> **BLOCKED** 🚨
+    *   If **Sensitive Data** (e.g., "CONFIDENTIAL") is found -> **BLOCKED** 🚫
+    *   If Safe -> **Encrypted & Uploaded** ✅
+4.  Copy the generated **Magic Link**.
 
 ---
 
-## 🧪 Security Testing (Proof of Concept)
+## 🧪 Security Proof of Concept (Testing)
 
-### 1. Virus Detection Test
-To test the antivirus capability, try uploading the standard **EICAR Test File**.
-*   **Content:** `X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`
-*   **Expected Result:** The system will reject the file with a `SECURITY ALERT: Virus Detected` message (HTTP 400).
+You can demonstrate the security features using these test files:
 
-### 2. Encryption Verification
-Uploaded files are stored in `backend/uploads/` with a `.enc` extension. Try opening them manually—they will be unreadable (encrypted bytes).
+### Test 1: Antivirus (ClamAV)
+*   Create a file named `virus.txt` with this content (EICAR Test Signature):
+    ```text
+    X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*
+    ```
+*   **Result:** `HTTP 400: VIRUS DETECTED`
+
+### Test 2: AI Data Leak Prevention (Ollama)
+*   Create a file named `secret_project.txt` with this content:
+    ```text
+    PROJECT TITAN - CONFIDENTIAL DOCUMENT
+    INTERNAL USE ONLY
+    
+    Database Password:
+    admin: SuperSecretPassword123
+    ```
+*   **Result:** `HTTP 400: AI SECURITY ALERT: Sensitive Data Detected`
+
+### Test 3: Safe File (False Positive Check)
+*   Upload a standard `Dockerfile` or a `CV.pdf`.
+*   **Result:** `Success` (The AI is trained to ignore Code and Resumes).
 
 ---
 
 ## 👤 Author
 **Ahmed Bousetta**
-*   **Project:** Stage
+*   **Institution:** ISET Kélibia
+*   **Company:** Axelites
 *   **Year:** 2026

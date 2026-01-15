@@ -29,6 +29,8 @@ services:
       - REDIS_HOST=redis
       - CLAMAV_HOST=clamav
       - OLLAMA_HOST=http://ollama:11434 # Optional helper var
+      - SMTP_EMAIL=${SMTP_EMAIL}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
 
   # 👇 ADDED: AI Service (Ollama)
   ollama:

@@ -2,7 +2,12 @@ import shutil
 import os
 import uuid
 import requests
+from fastapi import BackgroundTasks
 from pypdf import PdfReader  # <--- MAKE SURE THIS IS HERE
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
 import json
 import io
 import threading
@@ -67,6 +72,10 @@ ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin123")
 
 # This enables switching between 'localhost' (testing) and 'redis' (docker)
 REDIS_HOST = os.getenv("REDIS_HOST", "redis") 
+import os
+
+
+
 
 # Connexion Redis
 r = None
@@ -227,6 +236,38 @@ def scan_with_ollama(content: bytes, filename: str):
     except requests.exceptions.RequestException as e:
         print(f"⚠️ Warning: AI Service error: {e}. Allowing file.")
         return "SAFE"
+# --- EMAIL CONFIGURATION ---
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 465
+SMTP_EMAIL = os.getenv("SMTP_EMAIL")       # Reads from .env
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD") # Reads from .env
+
+def send_email_notification(to_email: str, subject: str, message: str):
+    """
+    Sends an email in the background.
+    If it fails (bad email), it just logs the error and continues.
+    """
+    if not SMTP_EMAIL or not SMTP_PASSWORD:
+        print("⚠️ EMAIL SKIPPED: Missing SMTP credentials in .env")
+        return
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = f"SecureTransfer <{SMTP_EMAIL}>"
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(message, 'plain'))
+
+        # Connect to Gmail Server securely
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+            server.login(SMTP_EMAIL, SMTP_PASSWORD)
+            server.send_message(msg)
+            
+        print(f"📧 EMAIL SENT to {to_email}")
+
+    except Exception as e:
+        # If email fails, we print the error but DO NOT crash the server.
+        print(f"⚠️ EMAIL FAILED (Could not send to {to_email}): {e}")
 # 🔐 AUTH ROUTES
 # ==========================================
 
@@ -363,19 +404,49 @@ async def admin_dashboard(key: str):
         "files": files, 
         "users": users
     }
-
 @app.post("/admin/user_action")
-async def user_action(key: str = Body(...), email: str = Body(...), action: str = Body(...)):
-    if not verify_admin(key): raise HTTPException(403)
+async def user_action(
+    background_tasks: BackgroundTasks,  # <--- This is the new part!
+    key: str = Body(...), 
+    email: str = Body(...), 
+    action: str = Body(...)
+):
+    # 1. Check Admin Permission
+    if not verify_admin(key): raise HTTPException(403, "Access Denied")
     
+    # 2. Check if User Exists in DB
     user_key = f"user:{email}"
     if not r.exists(user_key): raise HTTPException(404, "User not found")
 
-    if action == "APPROVE": r.hset(user_key, "status", "ACTIVE")
-    elif action == "BAN": r.hset(user_key, "status", "BANNED")
-    
-    return {"message": f"User {action}ED"}
+    # --- ACTION: APPROVE ---
+    if action == "APPROVE":
+        r.hset(user_key, "status", "ACTIVE")
+        
+        # Email Message
+        subject = "✅ Account Approved - Axelites SecureTransfer"
+        body = (
+            f"Hello,\n\n"
+            f"Good news! Your account ({email}) has been APPROVED by the Administrator.\n\n"
+            f"You can now log in and start sending secure files."
+        )
+        # Send Email in Background (User doesn't wait)
+        background_tasks.add_task(send_email_notification, email, subject, body)
 
+    # --- ACTION: BAN ---
+    elif action == "BAN":
+        r.hset(user_key, "status", "BANNED")
+        
+        # Email Message
+        subject = "🚫 Account Suspended - Axelites SecureTransfer"
+        body = (
+            f"Hello,\n\n"
+            f"Your account ({email}) has been SUSPENDED due to a security violation.\n\n"
+            f"If you believe this is an error, please contact the IT Administrator."
+        )
+        # Send Email in Background
+        background_tasks.add_task(send_email_notification, email, subject, body)
+    
+    return {"message": f"User {action}ED (Email notification queued)"}
 @app.post("/admin/user_limit")
 async def user_limit(key: str = Body(...), email: str = Body(...), limit: int = Body(...)):
     if not verify_admin(key): raise HTTPException(403)
@@ -383,10 +454,26 @@ async def user_limit(key: str = Body(...), email: str = Body(...), limit: int = 
     return {"message": "Limit updated"}
 
 @app.delete("/admin/delete_user/{email}")
-async def delete_user(email: str, key: str):
+async def delete_user(
+    email: str, 
+    key: str,
+    background_tasks: BackgroundTasks # <--- New Parameter
+):
     if not verify_admin(key): raise HTTPException(403)
-    if r: r.delete(f"user:{email}")
-    return {"status": "User Deleted"}
+    
+    if r and r.exists(f"user:{email}"):
+        r.delete(f"user:{email}")
+        
+        # Email Message
+        subject = "⚠️ Account Deleted - Axelites SecureTransfer"
+        body = f"Hello,\n\nYour account ({email}) has been permanently DELETED by the Administrator."
+        
+        # Send Email
+        background_tasks.add_task(send_email_notification, email, subject, body)
+        
+        return {"status": "User Deleted & Notified"}
+        
+    return {"status": "User not found"}
 
 @app.delete("/admin/delete/{file_id}")
 async def delete_file(file_id: str, key: str):
