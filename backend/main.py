@@ -111,6 +111,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["Content-Disposition"]
 )
 
 # --- HELPERS ---
@@ -248,7 +249,7 @@ def scan_with_ollama(content: bytes, filename: str):
             "options": {
                 "temperature": 0.1 
             }
-        }, timeout=20)
+        }, timeout=60)
         
         if response.status_code == 200:
             result = response.json().get("response", "").strip().upper()

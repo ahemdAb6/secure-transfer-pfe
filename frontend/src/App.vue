@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { Html5Qrcode } from "html5-qrcode"
 
-// --- IMPORT COMPONENTS ---
+
 import LoginView from './components/Login.vue'
 import AdminView from './components/Admin.vue'
 
@@ -10,7 +10,7 @@ import AdminView from './components/Admin.vue'
 const currentView = ref('login') // Options: 'login', 'home', 'admin'
 const userSession = ref(null)    // Stores { token: "...", email: "...", role: "..." }
 
-// --- FILE UPLOAD/DOWNLOAD STATE ---
+
 const currentTab = ref('upload')
 const file = ref(null)
 const loading = ref(false)
@@ -183,22 +183,60 @@ const performDownload = async (id, pwd) => {
     const headers = { 'Content-Type': 'application/json' }
     const body = pwd ? JSON.stringify({ password: pwd }) : JSON.stringify({})
     const response = await fetch(`/api/download/${id}`, { method: 'POST', headers, body })
+    
+    // Error Handling
     if (response.status === 401 || response.status === 403) throw new Error("🔒 Incorrect Password")
     if (response.status === 410) throw new Error("⛔ Download limit reached")
     if (response.status === 500) throw new Error("Server Error")
     if (!response.ok) throw new Error("Download failed")
+    
+    // Create Blob
     const blob = await response.blob()
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
+    
+    // 👇 NEW FILENAME LOGIC START 👇
     const disposition = response.headers.get('Content-Disposition')
-    let fileName = 'file'
-    if (disposition && disposition.match(/filename="?(.+)"?/)) fileName = disposition.match(/filename="?(.+)"?/)[1]
-    a.download = fileName.replace(/"/g, ''); document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url)
-    addToReceivedHistory(id, fileName); fileIdInput.value = ''; currentDownloadId.value = null; downloadPassword.value = ''
+    let fileName = 'downloaded_file' // Default name if extraction fails
+
+    if (disposition) {
+      // 1. Check for Modern format (Used by Python quote())
+      // Looks like: filename*=utf-8''CV%20Ahmed.pdf
+      const modernMatch = disposition.match(/filename\*=utf-8''(.+)/i)
+      if (modernMatch && modernMatch[1]) {
+        fileName = decodeURIComponent(modernMatch[1])
+      } 
+      // 2. Check for Legacy format
+      // Looks like: filename="CV Ahmed.pdf"
+      else {
+        const legacyMatch = disposition.match(/filename="?([^";]+)"?/i)
+        if (legacyMatch && legacyMatch[1]) {
+          fileName = legacyMatch[1]
+        }
+      }
+    }
+    // 👆 NEW FILENAME LOGIC END 👆
+
+    a.download = fileName.replace(/"/g, '') // Remove extra quotes if any
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(url)
+    
+    addToReceivedHistory(id, fileName)
+    fileIdInput.value = ''
+    currentDownloadId.value = null
+    downloadPassword.value = ''
     showToast("⬇️ Download started...")
-  } catch (e) { error.value = e.message; showToast("❌ " + e.message); if (e.message.includes("Password")) { showPasswordModal.value = true } } 
-  finally { loading.value = false }
+
+  } catch (e) { 
+    error.value = e.message 
+    showToast("❌ " + e.message) 
+    if (e.message.includes("Password")) { showPasswordModal.value = true } 
+  } finally { 
+    loading.value = false 
+  }
 }
 
 const startScanner = () => {
