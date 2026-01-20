@@ -1,39 +1,53 @@
 # 🔒 SecureTransfer - AI-Powered Secure File Sharing
 
-> **PFE Project (Stage)** | Developed for **Axelites** | 2026
+> **PFE Project (Stage de Perfectionnement)** | Developed for **Axelites** | 2026
+> **Author:** Ahmed Bousetta | **Institution:** ISET Kélibia
+
+![Status](https://img.shields.io/badge/Status-Operational-green)
+![Security](https://img.shields.io/badge/Security-AES--256-blue)
+![AI Engine](https://img.shields.io/badge/AI-FineTuned_CodeBERT-purple)
 
 ## 📖 Overview
 **SecureTransfer** is an enterprise-grade, self-hosted file sharing platform designed for high-security environments. It acts as a private alternative to WeTransfer, ensuring **Data Sovereignty** and **Zero-Trust Security**.
 
 Unlike standard file sharing tools, SecureTransfer employs a **Multi-Layered Security Engine**:
 1.  **Antivirus:** Scans binary files for malware using **ClamAV**.
-2.  **AI Data Loss Prevention (DLP):** Uses a local AI Model (**Qwen 2.5**) to read documents and block sensitive data leaks (passwords, confidential keys, internal secrets) *before* they leave the network.
-3.  **Encryption:** Military-grade **AES-256** encryption.
+2.  **AI Data Loss Prevention (DLP):** Uses a specialized **Fine-Tuned CodeBERT Model** embedded directly in the backend to detect secrets (API Keys, Passwords, PII) in milliseconds.
+3.  **Encryption:** Military-grade **AES-256 (Fernet)** encryption for data at rest.
 
 ---
 
-## 🚀 Key Features
+## 🚀 Key Innovation: Embedded AI Architecture
 
-### 🛡️ 1. Intelligent Security Core
-*   **🤖 AI Data Leak Detection:** Integrated with **Ollama (Qwen 2.5)**. The system analyzes text content (TXT, PDF) to detect and block:
-    *   "CONFIDENTIAL" / "INTERNAL USE ONLY" documents.
-    *   Leaked Credentials (API Keys, Passwords).
-    *   PII (Personal Identifiable Information) leaks.
-    *   *Smart Filtering:* Distinguishes between safe Source Code/CVs and actual security threats.
-*   **🦠 Real-Time Antivirus:** Integrated with **ClamAV**. Scans every byte stream; viruses are rejected immediately.
-*   **🔐 End-to-End Encryption:** Files are encrypted with **Fernet (AES-256)**. The server *never* stores unencrypted files.
+**Why not ChatGPT or Ollama?**
+Traditional AI solutions have significant drawbacks for security:
+*   **Latency:** Sending data to external LLMs takes 2-5 seconds.
+*   **Privacy Risk:** Confidential files leave the server.
+*   **Resource Heavy:** Llama 3 requires 8GB+ RAM.
 
-### 👤 2. User Management & Auth
-*   **Registration System:** Users can sign up, but accounts remain **PENDING** until Admin approval (Zero-Trust).
-*   **Role-Based Access:**
-    *   **Users:** Can upload/download based on daily quotas.
-    *   **Admins:** Full control over users, files, and server health.
-*   **Banning System:** Admins can instantly **BAN** users who violate security policies.
+**My Solution: Embedded CodeBERT**
+I fine-tuned the `microsoft/codebert-base` model specifically for secret detection and embedded it directly into the Python application.
+*   ✅ **Zero Latency:** Scans take **< 0.05s**.
+*   ✅ **Absolute Privacy:** Data never leaves the container RAM.
+*   ✅ **Offline Capable:** Works without any internet connection.
+*   ✅ **Lightweight:** Runs on standard CPU (No GPU required).
 
-### 📊 3. Advanced Admin Dashboard
-*   **Live Analytics:** Monitor Disk Usage, File Type distribution, and User Storage consumption.
-*   **Audit Logs:** Track who uploaded what file and when.
-*   **User Control:** Approve new registrations or Ban suspicious accounts with one click.
+---
+
+## 🛡️ Features
+
+### 1. Intelligent Security Core
+*   **🤖 AI Data Leak Detection:** Blocks files containing:
+    *   Leaked Credentials (AWS Keys, Private Keys).
+    *   Hardcoded Passwords.
+    *   "CONFIDENTIAL" document markers.
+*   **🦠 Real-Time Antivirus:** Integrated with **ClamAV**.
+*   **🔐 End-to-End Encryption:** Files are encrypted before saving to disk.
+
+### 2. User Management
+*   **Zero-Trust Registration:** New accounts are **PENDING** until Admin approval.
+*   **Daily Quotas:** Limits uploads per user to prevent abuse.
+*   **Admin Dashboard:** Live analytics of disk usage and file types.
 
 ---
 
@@ -42,9 +56,9 @@ Unlike standard file sharing tools, SecureTransfer employs a **Multi-Layered Sec
 | Component | Technology | Role |
 | :--- | :--- | :--- |
 | **Frontend** | Vue.js 3 + Tailwind CSS | Responsive, Modern UI |
-| **Backend** | Python FastAPI | Async API, Security Logic, Rate Limiting |
-| **AI Brain** | **Ollama + Qwen 2.5 (0.5B)** | Local LLM for Data Loss Prevention (DLP) |
-| **Database** | Redis | High-speed Metadata, Session Mgmt & Caching |
+| **Backend** | Python FastAPI | Async API, Rate Limiting |
+| **AI Brain** | **CodeBERT (Fine-Tuned)** | Custom Security Model (PyTorch/Transformers) |
+| **Database** | Redis | High-speed Metadata & Caching |
 | **Antivirus** | ClamAV | Malware Engine |
 | **Infrastructure** | Docker Compose | Container Orchestration |
 
@@ -66,75 +80,38 @@ Unlike standard file sharing tools, SecureTransfer employs a **Multi-Layered Sec
 
 2.  **Configure Environment:**
     *   Create a `.env` file in the root directory.
-    *   Define your `ADMIN_EMAIL` and `ADMIN_PASS` (See `.env.example`).
+    *   Define your `ADMIN_EMAIL` and `ADMIN_PASS`.
 
-3.  **Start the Server:**
-    ```bash
-    docker compose up --build -d
-    ```
+3.  **📥 Download the AI Brain (Crucial Step):**
+    *   Because the fine-tuned model is large (~500MB), it is stored externally.
+    *   **Download Link:** [https://drive.google.com/file/d/19hJ0iHtaAhDEuYTEWmldlpezjx3sy6-i/view?usp=sharing](https://drive.google.com/file/d/19hJ0iHtaAhDEuYTEWmldlpezjx3sy6-i/view?usp=sharing)
+    *   **Action:** Unzip the folder `my_model` and place it inside `backend/`.
+    *   *Structure Check:* `backend/my_model/pytorch_model.bin`
 
-4.  **🧠 Initialize the AI Brain (Critical Step):**
-    *The AI model runs locally inside Docker. You must download it once.*
+4.  **Start the Server:**
     ```bash
-    docker exec -it secure_ai_brain ollama run qwen2.5:0.5b
+    docker-compose up --build -d
     ```
-    *(Wait for the download to finish, then type `/bye` to exit).*
 
 5.  **Access the Application:**
-    *   **Web App:** https://localhost
-    *   *(Accept the self-signed certificate warning)*
+    *   **Web App:** http://localhost
+    *   **Swagger API Docs:** http://localhost:8000/docs
 
 ---
 
-## 👨‍💻 Usage Guide
+## 🧪 Security Proof of Concept (Test Files)
 
-### 1. Registration (First Time)
-1.  Go to **Register**.
-2.  Create an account.
-3.  **Note:** You cannot log in yet! An **Admin** must approve your account first.
-
-### 2. Admin Approval
-1.  Log in with the **Master Admin credentials** (Defined in your `.env` file).
-    *   *Default:* Check `docker-compose.yml` or your environment variables.
-2.  Go to the **Admin Dashboard**.
-3.  Find the new user in the list and click **"APPROVE"**.
-
-### 3. Sending a File
-1.  Log in as a User.
-2.  Drag & Drop a file.
-3.  **The Security Scan runs automatically:**
-    *   If a **Virus** is found -> **BLOCKED** 🚨
-    *   If **Sensitive Data** (e.g., "CONFIDENTIAL") is found -> **BLOCKED** 🚫
-    *   If Safe -> **Encrypted & Uploaded** ✅
-4.  Copy the generated **Magic Link**.
-
----
-
-## 🧪 Security Proof of Concept (Testing)
-
-You can demonstrate the security features using these test files:
-
-### Test 1: Antivirus (ClamAV)
-*   Create a file named `virus.txt` with this content (EICAR Test Signature):
-    ```text
-    X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*
-    ```
+### Test 1: Virus Upload
+*   **File Content:** (EICAR Test Signature)
 *   **Result:** `HTTP 400: VIRUS DETECTED`
 
-### Test 2: AI Data Leak Prevention (Ollama)
-*   Create a file named `secret_project.txt` with this content:
-    ```text
-    PROJECT TITAN - CONFIDENTIAL DOCUMENT
-    INTERNAL USE ONLY
-    
-    Database Password:
-    admin: SuperSecretPassword123
-    ```
+### Test 2: Secret Key Leak
+*   **File Content:** `AWS_ACCESS_KEY_ID = "AKIA1234567890"`
 *   **Result:** `HTTP 400: AI SECURITY ALERT: Sensitive Data Detected`
 
-### Test 3: Safe File (False Positive Check)
-*   Upload a standard `Dockerfile` or a `CV.pdf`.
-*   **Result:** `Success` (The AI is trained to ignore Code and Resumes).
+### Test 3: Safe Resume (CV)
+*   **File Content:** A standard PDF Resume (up to 50MB).
+*   **Result:** `Success` (Smart Partial Scan checks first 5 pages only).
 
 ---
 

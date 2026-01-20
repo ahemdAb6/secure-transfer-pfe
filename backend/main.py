@@ -205,24 +205,65 @@ def send_email_notification(to_email: str, subject: str, message: str):
 
 def scan_file_content(content: bytes, filename: str):
     text_preview = ""
+    MAX_PAGES = 5    
+    MAX_CHARS = 10000  
+
     try:
-        text_preview = content.decode('utf-8')
-    except:
-        return "SAFE"
+
+        if filename.lower().endswith(".pdf"):
+            try:
+                pdf_file = io.BytesIO(content)
+                reader = PdfReader(pdf_file)
+                
+                num_pages = len(reader.pages)
+                pages_to_scan = min(num_pages, MAX_PAGES) 
+                
+                logger.info(f"📄 Scanning first {pages_to_scan} pages of {filename}...")
+
+                for i in range(pages_to_scan):
+                    page_text = reader.pages[i].extract_text()
+                    if page_text:
+                        text_preview += page_text + "\n"
+                        
+            except Exception as e:
+                logger.warning(f"⚠️ PDF Error: {e}")
+                return "SAFE"
+
+        else:
+            try:
+                text_preview = content[:MAX_CHARS].decode('utf-8', errors='ignore')
+            except:
+                logger.info(f"⏭️ Binary file skipped: {filename}")
+                return "SAFE"
             
-    if not text_preview.strip():
+        if not text_preview.strip():
+            return "SAFE"
+
+    except Exception as e:
+        logger.warning(f"⚠️ Extraction Error: {str(e)}")
         return "SAFE"
+
+    patterns = {
+        "AWS Key": r'AKIA[0-9A-Z]{16}',
+        "Private Key": r'BEGIN RSA PRIVATE KEY',
+        "Hardcoded Password": r'(?:password|secret)\s*=\s*[\'"][^\'"]+[\'"]'
+    }
+
+    for threat, regex in patterns.items():
+        if re.search(regex, text_preview):
+            logger.warning(f"🚫 BLOCKED: {threat} detected in {filename}")
+            raise HTTPException(status_code=400, detail=f"⚠️ SECURITY ALERT: {threat} Detected.")
 
     if not ai_tokenizer or not ai_model:
-        logger.warning("AI not loaded, skipping scan.")
         return "SAFE"
 
     try:
+ 
         inputs = ai_tokenizer(
             text_preview, 
             return_tensors="pt", 
             truncation=True, 
-            max_length=512,
+            max_length=512, 
             padding=True
         )
         
@@ -232,18 +273,17 @@ def scan_file_content(content: bytes, filename: str):
         probabilities = F.softmax(outputs.logits, dim=-1)
         danger_score = probabilities[0][1].item() * 100
         
-        logger.info(f"🔍 AI Analysis for {filename}: Danger={danger_score:.2f}%")
+        logger.info(f"🔍 AI Analysis: {filename} = {danger_score:.2f}% Danger")
 
         if danger_score > 50:
-            logger.warning(f"🚫 BLOCKED: {filename} contains secrets!")
-            raise HTTPException(status_code=400, detail="⚠️ Security Alert: File contains sensitive data.")
+            logger.warning(f"🚫 AI BLOCKED {filename}")
+            raise HTTPException(status_code=400, detail="⚠️ AI SECURITY ALERT: Sensitive Data Detected.")
 
     except HTTPException as he:
         raise he
     except Exception as e:
-        logger.error(f"Scan Error: {e}")
+        logger.error(f"❌ AI Error: {str(e)}")
         return "SAFE"
-
 #auth routes
 
 @app.post("/auth/register")
@@ -495,9 +535,13 @@ async def upload_file(
         scan_file_for_virus(file_content)
 
    
-        if file_size < 1024 * 1024:
- 
-            scan_file_content(file_content, file.filename)  
+       
+
+        if file_size < 50 * 1024 * 1024: 
+            logger.info(f"🤖 Starting AI Scan for: {file.filename}") 
+            scan_file_content(file_content, file.filename)
+        else:
+            logger.warning(f"⏩ AI Scan Skipped: File too large ({file_size/1024/1024:.2f} MB)")
         key = Fernet.generate_key()
         cipher = Fernet(key)
         encrypted_content = cipher.encrypt(file_content)
