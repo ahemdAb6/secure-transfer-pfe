@@ -6,7 +6,6 @@ const emit = defineEmits(['logout'])
 
 const activeTab = ref('users') 
 const loading = ref(false)
-// Initialize with default structure to prevent errors before load
 const data = ref({ 
   users: [], 
   files: [], 
@@ -31,7 +30,7 @@ const loadDashboard = async () => {
 
 onMounted(() => { loadDashboard() })
 
-// --- ACTIONS ---
+
 
 const updateUserStatus = async (email, action) => {
   if (action === 'BAN' && !confirm(`Ban ${email}?`)) return
@@ -67,12 +66,12 @@ const deleteFile = async (id) => {
   loadDashboard()
 }
 
-// Helper for Progress Bar Color
+
 const diskColor = computed(() => {
   const p = data.value.disk_info.percent_full
-  if(p > 90) return '#ef4444' // Red (Critical)
-  if(p > 70) return '#f59e0b' // Orange (Warning)
-  return '#10b981' // Green (Good)
+  if(p > 90) return '#ef4444' 
+  if(p > 70) return '#f59e0b' 
+  return '#10b981' 
 })
 </script>
 
@@ -81,7 +80,6 @@ const diskColor = computed(() => {
     <div class="bg-noise"></div>
     <div class="glow-orb"></div>
 
-    <!-- SIDEBAR -->
     <aside class="sidebar">
       <div class="sidebar-header">
         <div class="logo-mark">🛡️</div>
@@ -110,11 +108,9 @@ const diskColor = computed(() => {
         </button>
       </div>
     </aside>
-
-    <!-- MAIN VIEW -->
     <main class="main-view">
       
-      <!-- HEADER -->
+    
       <header class="view-header">
         <div class="header-titles">
           <h1>{{ activeTab === 'users' ? 'User Management' : 'File Repository' }}</h1>
@@ -125,9 +121,9 @@ const diskColor = computed(() => {
         </button>
       </header>
 
-      <!-- ANALYTICS DASHBOARD (NEW) -->
+
       <div class="analytics-row">
-        <!-- Card 1: Server Health -->
+        
         <div class="stat-card">
           <div class="stat-header">
             <span class="stat-title">Server Storage</span>
@@ -140,8 +136,6 @@ const diskColor = computed(() => {
             {{ data.disk_info.used_gb }} GB used of {{ data.disk_info.total_gb }} GB
           </div>
         </div>
-
-        <!-- Card 2: File Distribution -->
         <div class="stat-card">
           <span class="stat-title">File Types</span>
           <div class="tags-container">
@@ -153,11 +147,11 @@ const diskColor = computed(() => {
         </div>
       </div>
 
-      <!-- DATA AREA -->
+
       <div class="data-container">
         <div v-if="loading" class="loading-overlay"><div class="spinner"></div></div>
 
-        <!-- USERS TABLE -->
+   
         <div v-if="activeTab === 'users'" class="table-card">
           <table>
             <thead>
@@ -165,7 +159,7 @@ const diskColor = computed(() => {
                 <th class="col-main">User</th>
                 <th>Status</th>
                 <th>Daily Limit</th>
-                <th>Storage Used</th> <!-- NEW COLUMN -->
+                <th>Storage Used</th> 
                 <th class="col-actions">Actions</th>
               </tr>
             </thead>
@@ -183,7 +177,7 @@ const diskColor = computed(() => {
                   </span>
                 </td>
                 <td class="mono-num">{{ u.limit || 50 }} files</td>
-                <td class="mono-num text-blue">{{ u.storage_used_mb }} MB</td> <!-- NEW DATA -->
+                <td class="mono-num text-blue">{{ u.storage_used_mb }} MB</td> 
                 <td class="col-actions">
                   <div class="action-group">
                     <button v-if="u.status === 'PENDING'" @click="updateUserStatus(u.email, 'APPROVE')" class="btn-xs btn-approve">✓ Approve</button>
@@ -204,14 +198,14 @@ const diskColor = computed(() => {
           <div v-if="data.users.length === 0 && !loading" class="empty-state">No users found.</div>
         </div>
 
-        <!-- FILES TABLE -->
+       
         <div v-if="activeTab === 'files'" class="table-card">
           <table>
             <thead>
               <tr>
                 <th class="col-main">Filename / ID</th>
                 <th>Sender</th>
-                <th>Size</th> <!-- NEW COLUMN -->
+                <th>Size</th>
                 <th>Security</th>
                 <th>Downloads</th>
                 <th class="col-actions">Actions</th>
@@ -226,7 +220,7 @@ const diskColor = computed(() => {
                   </div>
                 </td>
                 <td><span class="sender-tag">{{ f.sender }}</span></td>
-                <td class="mono-num text-blue">{{ f.size_mb }} MB</td> <!-- NEW DATA -->
+                <td class="mono-num text-blue">{{ f.size_mb }} MB</td> 
                 <td>
                   <span v-if="f.protected === 'Yes'" class="badge-lock">🔒 Protected</span>
                   <span v-else class="badge-public">Public</span>
@@ -248,7 +242,7 @@ const diskColor = computed(() => {
 <style scoped>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
-/* KEEPING YOUR ORIGINAL STYLES + NEW ADDITIONS */
+
 .admin-shell { display: flex; width: 100vw; height: 100vh; background-color: #020617; color: #f8fafc; font-family: 'Inter', sans-serif; overflow: hidden; position: relative; }
 .bg-noise { position: absolute; inset: 0; opacity: 0.04; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E"); pointer-events: none; z-index: 0; }
 .glow-orb { position: absolute; top: -100px; left: -100px; width: 500px; height: 500px; background: radial-gradient(circle, rgba(99,102,241,0.15) 0%, transparent 70%); border-radius: 50%; pointer-events: none; z-index: 0; }
@@ -279,7 +273,7 @@ const diskColor = computed(() => {
 .spinning { animation: spin 1s linear infinite; }
 @keyframes spin { 100% { transform: rotate(360deg); } }
 
-/* --- NEW ANALYTICS SECTION --- */
+
 .analytics-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 0 40px 20px; }
 .stat-card { background: rgba(30, 41, 59, 0.4); border: 1px solid rgba(255,255,255,0.08); padding: 20px; border-radius: 12px; display: flex; flex-direction: column; gap: 10px; }
 .stat-header { display: flex; justify-content: space-between; align-items: center; }

@@ -23,10 +23,14 @@ from pypdf import PdfReader
 import logging
 from logging.handlers import RotatingFileHandler 
 
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+import torch.nn.functional as F
+
 log_handler = RotatingFileHandler(
     "securetransfer.log", 
-    maxBytes=5 * 1024 * 1024,  # 5 Megabytes
-    backupCount=3,             # Keep 3 old files, delete the rest
+    maxBytes=5 * 1024 * 1024, 
+    backupCount=3,            
     encoding='utf-8'
 )
 
@@ -35,7 +39,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         log_handler,
-        logging.StreamHandler() # Also print to console
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -48,7 +52,7 @@ try:
 except ImportError:
     logger.warning("⚠️ WARNING: 'python-dotenv' library missing. Using system defaults.")
 
-# --- SAFE IMPORTS ---
+
 try:
     import redis
 except ImportError:
@@ -75,7 +79,7 @@ except ImportError:
     class RateLimitExceeded(Exception): pass
     def _rate_limit_exceeded_handler(req, exc): return Response("Busy", status_code=429)
 
-# --- CONFIGURATION ---
+
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -99,7 +103,25 @@ if redis:
     except Exception as e:
         logger.error(f"⚠️ Redis Connection Failed: {str(e)}")
 
-# --- INIT APP ---
+MODEL_PATH = "/app/my_model"
+ai_tokenizer = None
+ai_model = None
+
+try:
+    logger.info("⏳ Loading AI Model...")
+    ai_tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+    ai_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+    logger.info("✅ AI Model Loaded Successfully")
+except Exception as e:
+    
+    try:
+        logger.info("⚠️ Docker path failed, trying local path...")
+        ai_tokenizer = AutoTokenizer.from_pretrained("./my_model")
+        ai_model = AutoModelForSequenceClassification.from_pretrained("./my_model")
+        logger.info("✅ AI Model Loaded Successfully (Local)")
+    except Exception as e2:
+        logger.error(f"❌ Failed to load AI: {e2}")
+
 app = FastAPI()
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
@@ -113,8 +135,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
     expose_headers=["Content-Disposition"]
 )
-
-# --- HELPERS ---
+#function
 
 def hash_password(pwd: str) -> str:
     """Hash un mot de passe avec bcrypt"""
@@ -181,99 +202,49 @@ def send_email_notification(to_email: str, subject: str, message: str):
     except Exception as e:
         logger.error(f"⚠️ EMAIL FAILED (Could not send to {to_email}): {e}")
 
-# --- AI LOGIC ---
-OLLAMA_URL = "http://ollama:11434/api/generate"
-AI_MODEL = "gemma:2b"
 
-def scan_with_ollama(content: bytes, filename: str):
+def scan_file_content(content: bytes, filename: str):
     text_preview = ""
     try:
-        if filename.endswith(".pdf"):
-            pdf_file = io.BytesIO(content)
-            reader = PdfReader(pdf_file)
-            if len(reader.pages) > 0: 
-                text_preview += reader.pages[0].extract_text()
-        else:
-            text_preview = content.decode('utf-8')
+        text_preview = content.decode('utf-8')
+    except:
+        return "SAFE"
             
-        if not text_preview.strip():
-            logger.info(f"📄 {filename}: No text content to scan")
-            return "SAFE"
-
-    except Exception as e:
-        logger.warning(f"⚠️ Could not extract text from {filename}: {str(e)}")
+    if not text_preview.strip():
         return "SAFE"
 
-    # Regex Checks
-    patterns = {
-        "AWS Key": r'AKIA[0-9A-Z]{16}',
-        "Private Key": r'BEGIN RSA PRIVATE KEY',
-        "Hardcoded Password": r'(?:password|secret)\s*=\s*[\'"][^\'"]+[\'"]'
-    }
+    if not ai_tokenizer or not ai_model:
+        logger.warning("AI not loaded, skipping scan.")
+        return "SAFE"
 
-    for threat, regex in patterns.items():
-        if re.search(regex, text_preview):
-            logger.warning(f"🚫 SENTINEL BLOCKED: {threat} detected via Regex in {filename}")
-            raise HTTPException(status_code=400, detail=f"⚠️ SECURITY ALERT: {threat} Detected.")
-
-    if len(text_preview) > 1500:
-        text_preview = text_preview[:1500]
-
-    prompt = f"""
-    You are a Data Loss Prevention (DLP) Sentinel. Your job is to classify text as SAFE or BLOCK.
-
-    --- EXAMPLES OF BLOCK ---
-    Text: "Here is the database dump with user passwords." -> BLOCK
-    Text: "The project code name is Project X, do not share." -> BLOCK
-    Text: "Customer list: John Doe, 555-0199, john@email.com" -> BLOCK
-    
-    --- EXAMPLES OF SAFE ---
-    Text: "import os; print('hello world')" -> SAFE
-    Text: "The meeting is at 5pm." -> SAFE
-    Text: "I need to fix the css bug on the navbar." -> SAFE
-
-    --- ANALYZE THIS ---
-    Text: "{text_preview}"
-
-    INSTRUCTIONS:
-    - If the text leaks company secrets, customer data, or credentials: Reply BLOCK.
-    - If it is code, homework, or general chat: Reply SAFE.
-    - Reply with ONE WORD ONLY.
-    """
-    
     try:
-        response = requests.post(OLLAMA_URL, json={
-            "model": AI_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.1 
-            }
-        }, timeout=60)
+        inputs = ai_tokenizer(
+            text_preview, 
+            return_tensors="pt", 
+            truncation=True, 
+            max_length=512,
+            padding=True
+        )
         
-        if response.status_code == 200:
-            result = response.json().get("response", "").strip().upper()
-            import string
-            result_clean = result.translate(str.maketrans('', '', string.punctuation))
+        with torch.no_grad():
+            outputs = ai_model(**inputs)
+        
+        probabilities = F.softmax(outputs.logits, dim=-1)
+        danger_score = probabilities[0][1].item() * 100
+        
+        logger.info(f"🔍 AI Analysis for {filename}: Danger={danger_score:.2f}%")
 
-            logger.info(f"🔍 AI Analysis for {filename}: {result_clean}")
+        if danger_score > 50:
+            logger.warning(f"🚫 BLOCKED: {filename} contains secrets!")
+            raise HTTPException(status_code=400, detail="⚠️ Security Alert: File contains sensitive data.")
 
-            if "BLOCK" in result_clean:
-                logger.warning(f"🚫 AI blocked {filename}: Data leak detected")
-                msg = "⚠️ AI SECURITY ALERT: Contextual Data Leak Detected."
-                raise HTTPException(status_code=400, detail=msg)
-            
-            logger.info(f"✅ AI scan passed for {filename}")
-            return "SAFE"
-
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"⚠️ AI Service unavailable: {str(e)} - File allowed by default")
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Scan Error: {e}")
         return "SAFE"
 
-
-# ==========================================
-# 🔐 AUTH ROUTES
-# ==========================================
+#auth routes
 
 @app.post("/auth/register")
 async def register(email: str = Form(...), password: str = Form(...)):
@@ -294,46 +265,44 @@ async def register(email: str = Form(...), password: str = Form(...)):
     }
     r.hset(f"user:{email}", mapping=user_data)
     
-    logger.info(f"New user registered: {email}") # LOG ADDED
+    logger.info(f"New user registered: {email}") 
     return {"message": "Registered. Wait for approval."}
 
 @app.post("/auth/login")
 async def login(email: str = Form(...), password: str = Form(...)):
-    # 1. ADMIN LOGIN
+ 
     if email == ADMIN_EMAIL and password == ADMIN_PASS:
         token = str(uuid.uuid4())
         if r: r.setex(f"session:{token}", 86400, ADMIN_EMAIL)
         
-        logger.info(f"Admin logged in: {email}") # LOG ADDED
+        logger.info(f"Admin logged in: {email}") 
         return {"message": "Admin", "token": token, "email": email, "role": "ADMIN"}
 
     if not r: raise HTTPException(500, "DB Offline")
     
-    # 2. USER LOGIN
     user_key = f"user:{email}"
     if not r.exists(user_key): 
-        logger.warning(f"Login failed (User not found): {email}") # LOG ADDED
+        logger.warning(f"Login failed (User not found): {email}")
         raise HTTPException(401, "Invalid credentials")
     
     user_data = r.hgetall(user_key)
     
-    # Check Password
     if not verify_password(password, user_data["password_hash"]):
-        logger.warning(f"Login failed (Wrong password): {email}") # LOG ADDED
+        logger.warning(f"Login failed (Wrong password): {email}") 
         raise HTTPException(401, "Invalid credentials")
     
     if user_data["status"] == "PENDING": 
-        logger.warning(f"Login denied (Pending): {email}") # LOG ADDED
+        logger.warning(f"Login denied (Pending): {email}")
         raise HTTPException(403, "Account pending approval")
         
     if user_data["status"] == "BANNED": 
-        logger.warning(f"Login denied (Banned): {email}") # LOG ADDED
+        logger.warning(f"Login denied (Banned): {email}") 
         raise HTTPException(403, "Account BANNED")
 
     token = str(uuid.uuid4())
     r.setex(f"session:{token}", 86400, email)
     
-    logger.info(f"User logged in: {email}") # LOG ADDED
+    logger.info(f"User logged in: {email}")
     return {"message": "Login successful", "token": token, "email": email, "role": "USER"}
 
 @app.post("/auth/logout")
@@ -347,14 +316,12 @@ async def logout(request: Request):
         
     if token and r: 
         r.delete(f"session:{token}")
-        logger.info(f"User logged out with token: {token[:10]}...") # LOG ADDED
+        logger.info(f"User logged out with token: {token[:10]}...")
         
     return {"message": "Logged out"}
 
 
-# ==========================================
-# 🛡️ ADMIN ROUTES
-# ==========================================
+#admin routes
 
 @app.get("/admin/dashboard")
 async def admin_dashboard(key: str):
@@ -408,7 +375,7 @@ async def admin_dashboard(key: str):
         "percent_full": round((used / total) * 100, 1)
     }
     
-    # logger.info("Admin dashboard loaded") # Optional: can be noisy
+  
     return {
         "status": "Online",
         "total_active_files": len(files),
@@ -434,12 +401,12 @@ async def user_action(
 
     if action == "APPROVE":
         r.hset(user_key, "status", "ACTIVE")
-        logger.info(f"Admin APPROVED user: {email}") # LOG ADDED
+        logger.info(f"Admin APPROVED user: {email}") 
         background_tasks.add_task(send_email_notification, email, "✅ Account Approved", "Your account has been approved.")
         
     elif action == "BAN":
         r.hset(user_key, "status", "BANNED")
-        logger.warning(f"Admin BANNED user: {email}") # LOG ADDED
+        logger.warning(f"Admin BANNED user: {email}")
         background_tasks.add_task(send_email_notification, email, "🚫 Account Suspended", "Your account has been suspended.")
     
     return {"message": f"User {action}ED"}
@@ -449,7 +416,7 @@ async def user_limit(key: str = Body(...), email: str = Body(...), limit: int = 
     if not verify_admin(key): raise HTTPException(403)
     r.hset(f"user:{email}", "limit", limit)
     
-    logger.info(f"Admin updated limit for {email} to {limit}") # LOG ADDED
+    logger.info(f"Admin updated limit for {email} to {limit}") 
     return {"message": "Limit updated"}
 
 @app.delete("/admin/delete_user/{email}")
@@ -458,7 +425,7 @@ async def delete_user(email: str, key: str, background_tasks: BackgroundTasks):
     
     if r and r.exists(f"user:{email}"):
         r.delete(f"user:{email}")
-        logger.warning(f"Admin DELETED user: {email}") # LOG ADDED
+        logger.warning(f"Admin DELETED user: {email}") 
         background_tasks.add_task(send_email_notification, email, "⚠️ Account Deleted", "Your account has been deleted.")
         return {"status": "User Deleted"}
     
@@ -472,12 +439,10 @@ async def delete_file(file_id: str, key: str):
     path = os.path.join(UPLOAD_DIR, f"{file_id}.enc")
     if os.path.exists(path): os.remove(path)
     
-    logger.warning(f"Admin DELETED file: {file_id}") # LOG ADDED
+    logger.warning(f"Admin DELETED file: {file_id}") 
     return {"status": "Deleted"}
 
-# ==========================================
-# 📂 FILE ROUTES
-# ==========================================
+#file routes
 
 @app.get("/check/{file_id}")
 async def check_file_info(file_id: str):
@@ -502,7 +467,7 @@ async def upload_file(
     sender_email = get_current_user_email(session_token)
     if not sender_email: raise HTTPException(401, "Unauthorized")
 
-    # Ban & Limit Check
+    
     if sender_email != ADMIN_EMAIL:
         user_data = r.hgetall(f"user:{sender_email}")
         if not user_data: raise HTTPException(401)
@@ -522,16 +487,17 @@ async def upload_file(
         r.expire(limit_key, 86400)
 
     try:
-        logger.info(f"Upload started: {file.filename} from {sender_email}") # LOG ADDED
+        logger.info(f"Upload started: {file.filename} from {sender_email}") 
         
         file_content = await file.read()
         file_size = len(file_content) 
 
         scan_file_for_virus(file_content)
 
+   
         if file_size < 1024 * 1024:
-            scan_with_ollama(file_content, file.filename) 
-
+ 
+            scan_file_content(file_content, file.filename)  
         key = Fernet.generate_key()
         cipher = Fernet(key)
         encrypted_content = cipher.encrypt(file_content)
@@ -554,12 +520,12 @@ async def upload_file(
         r.hset(file_id, mapping=metadata)
         r.expire(file_id, expiration)
         
-        logger.info(f"Upload successful: {file_id} ({file.filename})") # LOG ADDED
+        logger.info(f"Upload successful: {file_id} ({file.filename})") 
         return {"id": file_id, "filename": file.filename, "message": "Success"}
         
     except HTTPException as he: raise he 
     except Exception as e: 
-        logger.error(f"Upload failed: {str(e)}") # LOG ADDED
+        logger.error(f"Upload failed: {str(e)}") 
         raise HTTPException(500, f"Server Error: {str(e)}")
     
 @app.post("/download/{file_id}")
@@ -571,7 +537,7 @@ async def download_file(request: Request, file_id: str, password: str = Body(Non
 
     if "password_hash" in data:
         if not password or not verify_password(password, data["password_hash"]):
-            logger.warning(f"Download blocked (Wrong password): {file_id}") # LOG ADDED
+            logger.warning(f"Download blocked (Wrong password): {file_id}")
             raise HTTPException(403, "Wrong password")
 
     if int(data.get("downloads_count", 0)) >= int(data.get("max_downloads", 100)):
@@ -579,7 +545,7 @@ async def download_file(request: Request, file_id: str, password: str = Body(Non
         path = os.path.join(UPLOAD_DIR, f"{file_id}.enc")
         if os.path.exists(path): os.remove(path)
         
-        logger.info(f"File expired/max downloads reached: {file_id}") # LOG ADDED
+        logger.info(f"File expired/max downloads reached: {file_id}") 
         raise HTTPException(410, "Expired")
 
     r.hincrby(file_id, "downloads_count", 1)
@@ -593,7 +559,7 @@ async def download_file(request: Request, file_id: str, password: str = Body(Non
         
         filename_encoded = quote(data["filename"])
         
-        logger.info(f"File downloaded: {file_id}") # LOG ADDED
+        logger.info(f"File downloaded: {file_id}")
 
         return Response(
             decrypted_content, 
@@ -609,7 +575,7 @@ async def download_file(request: Request, file_id: str, password: str = Body(Non
 def cleanup():
     logger.info("🧹 Cleanup thread started")
     while True:
-        time.sleep(300)  # Toutes les 5 minutes
+        time.sleep(300) 
         try:
             if r:
                 deleted_count = 0

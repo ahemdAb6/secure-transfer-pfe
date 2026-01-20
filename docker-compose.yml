@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # 1. Frontend (Nginx)
   nginx:
     build: ./frontend
     container_name: secure-transfer-frontend
@@ -13,8 +12,6 @@ services:
       - ./nginx/certs:/etc/nginx/certs
     depends_on:
       - backend
-
-  # 2. Backend (Python API)
   backend:
     build: ./backend
     container_name: secure-transfer-backend
@@ -24,37 +21,19 @@ services:
     depends_on:
       - redis
       - clamav
-      - ollama  # 👇 ADDED: Wait for AI to start
     env_file:
       - ./.env
     environment:
       - REDIS_HOST=redis
       - CLAMAV_HOST=clamav
       
-
-  # 👇 ADDED: AI Service (Ollama)
-  ollama:
-    image: ollama/ollama:latest
-    container_name: secure_ai_brain
-    volumes:
-      - ollama_data:/root/.ollama
-    ports:
-      - "11434:11434"
-    restart: always
-
-  # 3. Redis
   redis:
     image: redis:alpine
     container_name: secure-transfer-redis
     restart: always
 
-  # 4. ClamAV
   clamav:
     image: clamav/clamav:latest
     container_name: secure-transfer-clamav
     environment:
       - CLAMAV_NO_FRESHCLAM=false
-
-# 👇 ADDED: Volume for AI Data
-volumes:
-  ollama_data:

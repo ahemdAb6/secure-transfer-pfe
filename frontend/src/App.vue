@@ -6,9 +6,8 @@ import { Html5Qrcode } from "html5-qrcode"
 import LoginView from './components/Login.vue'
 import AdminView from './components/Admin.vue'
 
-// --- APP STATE ---
-const currentView = ref('login') // Options: 'login', 'home', 'admin'
-const userSession = ref(null)    // Stores { token: "...", email: "...", role: "..." }
+const currentView = ref('login') 
+const userSession = ref(null) 
 
 
 const currentTab = ref('upload')
@@ -29,13 +28,11 @@ const receivedHistory = ref([])
 const isDragging = ref(false) 
 let html5QrCode = null
 
-// --- LIFECYCLE ---
 onMounted(() => {
-  // 1. Check if user is already logged in
+
   const savedSession = localStorage.getItem('userSession')
   if (savedSession) {
     userSession.value = JSON.parse(savedSession)
-    // Redirect based on role
     if (userSession.value.role === 'ADMIN') {
       currentView.value = 'admin'
     } else {
@@ -43,20 +40,16 @@ onMounted(() => {
     }
   }
 
-  // 2. Load History
+ 
   const savedSent = localStorage.getItem('sentHistory')
   const savedReceived = localStorage.getItem('receivedHistory')
   if (savedSent) sentHistory.value = JSON.parse(savedSent)
   if (savedReceived) receivedHistory.value = JSON.parse(savedReceived)
 
-  // 3. Check URL for Download (Public Access allowed for download)
   const urlParams = new URLSearchParams(window.location.search)
   const idFromUrl = urlParams.get('id')
   if (idFromUrl) {
-    // If accessing a link, we allow staying on login page or home, 
-    // but we prioritize showing the download tab logic if logged in.
-    // For simplicity in this PFE, we assume public download doesn't require login yet,
-    // BUT your backend logic requires login for upload only.
+
     if (userSession.value) {
       currentView.value = 'home'
       switchTab('download')
@@ -66,7 +59,6 @@ onMounted(() => {
   }
 })
 
-// --- AUTH HANDLERS ---
 const handleLoginSuccess = (session) => {
   userSession.value = session
   localStorage.setItem('userSession', JSON.stringify(session))
@@ -77,12 +69,11 @@ const handleLoginSuccess = (session) => {
 const handleAdminLogin = (session) => {
   userSession.value = session
   localStorage.setItem('userSession', JSON.stringify(session))
-  currentView.value = 'admin' // <--- THIS SWITCHES THE VIEW
+  currentView.value = 'admin' 
   showToast("🛡️ Admin Mode Activated")
 }
 
 const logout = () => {
-  // Optional: Call backend logout
   try { fetch('/api/auth/logout', { method: 'POST', body: new FormData().append('session_token', userSession.value?.token) }) } catch(e){}
   
   userSession.value = null
@@ -90,14 +81,12 @@ const logout = () => {
   currentView.value = 'login'
 }
 
-// --- UTILS ---
 const switchTab = (tab) => { currentTab.value = tab; error.value = null; fileIdInput.value = ''; passwordInput.value = ''; }
 const showToast = (msg) => { toast.value = { show: true, message: msg }; setTimeout(() => { toast.value.show = false }, 3000) }
 const formatFileSize = (bytes) => { if (bytes < 1024) return bytes + ' B'; if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'; return (bytes / 1024 / 1024).toFixed(2) + ' MB' }
 const extractId = (input) => { if (!input) return ""; if (input.includes('id=')) return input.split('id=')[1].split('&')[0]; return input.trim() }
 const copyToClipboard = (text, msg) => { navigator.clipboard.writeText(text); showToast(msg) }
 
-// --- HISTORY LOGIC ---
 const addToSentHistory = (data) => {
   const newItem = { id: data.id, name: data.filename, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), size: file.value ? formatFileSize(file.value.size) : '?' }
   sentHistory.value.unshift(newItem); if (sentHistory.value.length > 20) sentHistory.value.pop(); localStorage.setItem('sentHistory', JSON.stringify(sentHistory.value))
@@ -111,14 +100,12 @@ const deleteSentItem = (index) => { sentHistory.value.splice(index, 1); localSto
 const deleteReceivedItem = (index) => { receivedHistory.value.splice(index, 1); localStorage.setItem('receivedHistory', JSON.stringify(receivedHistory.value)) }
 const clearReceivedHistory = () => { receivedHistory.value = []; localStorage.removeItem('receivedHistory') }
 
-// --- FILE HANDLERS ---
 const onDragOver = (e) => { e.preventDefault(); isDragging.value = true }
 const onDragLeave = () => { isDragging.value = false }
 const onDrop = (e) => { e.preventDefault(); isDragging.value = false; if (e.dataTransfer.files.length > 0) { file.value = e.dataTransfer.files[0]; result.value = null; error.value = null } }
 const handleFileChange = (e) => { file.value = e.target.files[0]; result.value = null; error.value = null }
 const handleInputPaste = () => { setTimeout(() => { fileIdInput.value = extractId(fileIdInput.value) }, 100) }
 
-// --- API: UPLOAD (SENDER) ---
 const uploadFile = async () => {
   if (!file.value) return showToast("⚠️ Select a file first")
   
@@ -127,10 +114,9 @@ const uploadFile = async () => {
   const formData = new FormData()
   formData.append("file", file.value)
   formData.append("expiration", expirationTime.value)
-  // Security: Send the Token!
+
   formData.append("session_token", userSession.value.token)
   
-  // Optional Password
   if (passwordInput.value) {
     formData.append("password", passwordInput.value)
   }
@@ -139,7 +125,6 @@ const uploadFile = async () => {
     const response = await fetch('/api/upload', { method: 'POST', body: formData })
     if (!response.ok) { 
       const errData = await response.json().catch(() => ({}))
-      // If 401 Unauthorized, force logout
       if (response.status === 401) { logout(); throw new Error("Session Expired") }
       throw new Error(errData.detail || `Upload Failed (${response.status})`) 
     }
@@ -159,7 +144,6 @@ const uploadFile = async () => {
   }
 }
 
-// --- API: DOWNLOAD (RECEIVER) ---
 const initiateDownload = async (manualId = null) => {
   let rawInput = manualId || fileIdInput.value
   const id = extractId(rawInput)
@@ -184,31 +168,24 @@ const performDownload = async (id, pwd) => {
     const body = pwd ? JSON.stringify({ password: pwd }) : JSON.stringify({})
     const response = await fetch(`/api/download/${id}`, { method: 'POST', headers, body })
     
-    // Error Handling
     if (response.status === 401 || response.status === 403) throw new Error("🔒 Incorrect Password")
     if (response.status === 410) throw new Error("⛔ Download limit reached")
     if (response.status === 500) throw new Error("Server Error")
     if (!response.ok) throw new Error("Download failed")
     
-    // Create Blob
     const blob = await response.blob()
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     
-    // 👇 NEW FILENAME LOGIC START 👇
     const disposition = response.headers.get('Content-Disposition')
-    let fileName = 'downloaded_file' // Default name if extraction fails
+    let fileName = 'downloaded_file' 
 
     if (disposition) {
-      // 1. Check for Modern format (Used by Python quote())
-      // Looks like: filename*=utf-8''CV%20Ahmed.pdf
       const modernMatch = disposition.match(/filename\*=utf-8''(.+)/i)
       if (modernMatch && modernMatch[1]) {
         fileName = decodeURIComponent(modernMatch[1])
       } 
-      // 2. Check for Legacy format
-      // Looks like: filename="CV Ahmed.pdf"
       else {
         const legacyMatch = disposition.match(/filename="?([^";]+)"?/i)
         if (legacyMatch && legacyMatch[1]) {
@@ -216,9 +193,9 @@ const performDownload = async (id, pwd) => {
         }
       }
     }
-    // 👆 NEW FILENAME LOGIC END 👆
 
-    a.download = fileName.replace(/"/g, '') // Remove extra quotes if any
+
+    a.download = fileName.replace(/"/g, '')
     document.body.appendChild(a)
     a.click()
     a.remove()
@@ -259,7 +236,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
     <div class="ambient-glow glow-primary"></div>
     <div class="ambient-glow glow-secondary"></div>
 
-    <!-- TOAST NOTIFICATION -->
     <Transition name="toast-pop">
       <div v-if="toast.show" class="toast-container">
         <div class="toast-content">
@@ -269,7 +245,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
       </div>
     </Transition>
 
-    <!-- VIEW 1: LOGIN -->
     <div v-if="currentView === 'login'" class="auth-wrapper">
       <div class="glass-panel auth-panel">
         <LoginView 
@@ -279,7 +254,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
       </div>
     </div>
 
-    <!-- VIEW 2: ADMIN DASHBOARD -->
 <div v-else-if="currentView === 'admin'" class="glass-container">
   <AdminView 
     :apiKey="userSession?.token" 
@@ -288,10 +262,8 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
   />
 </div>
 
-    <!-- VIEW 3: MAIN APP -->
     <div v-else-if="currentView === 'home'" class="app-container">
-      
-      <!-- SIDEBAR -->
+    
       <aside class="sidebar">
         <div class="sidebar-header">
           <div class="logo-wrapper">
@@ -330,21 +302,16 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
         </div>
       </aside>
 
-      <!-- MAIN CONTENT -->
       <main class="content-area">
-        
-        <!-- TAB NAVIGATION -->
         <nav class="tab-nav">
           <div class="tab-pill" :style="{ transform: currentTab === 'upload' ? 'translateX(0)' : 'translateX(100%)' }"></div>
           <button :class="{ 'tab-active': currentTab === 'upload' }" @click="switchTab('upload')">Upload</button>
           <button :class="{ 'tab-active': currentTab === 'download' }" @click="switchTab('download')">Download</button>
         </nav>
 
-        <!-- UPLOAD SECTION -->
         <Transition name="fade-scale" mode="out-in">
           <div v-if="currentTab === 'upload'" key="upload" class="workspace">
             
-            <!-- DROPZONE -->
             <div 
               class="dropzone" 
               :class="{ 'dragging': isDragging, 'has-file': file }"
@@ -355,7 +322,7 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
             >
               <input type="file" ref="fileInput" @change="handleFileChange" hidden>
               
-              <!-- Empty State -->
+          
               <div v-if="!file" class="dz-empty">
                 <div class="dz-icon-wrapper">
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -364,7 +331,7 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
                 <p>or click to browse (Max 5GB)</p>
               </div>
 
-              <!-- Selected State -->
+     
               <div v-else class="dz-selected">
                 <div class="file-icon-card">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
@@ -377,7 +344,7 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
               </div>
             </div>
 
-            <!-- UPLOAD SETTINGS -->
+   
             <div v-if="file && !result" class="settings-panel">
               <div class="form-grid">
                 <div class="form-group">
@@ -394,7 +361,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 
                 <div class="form-group full-width">
                    <label>Password Protection <span class="opt">(Optional)</span></label>
-                   <!-- Password Toggle Implementation using Inline DOM Event -->
                    <div class="password-wrapper">
                      <input type="password" v-model="passwordInput" placeholder="Set a secure password..." class="input-field">
                      <button type="button" class="eye-toggle" 
@@ -410,8 +376,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
                 <span v-else>Encrypt & Send File</span>
               </button>
             </div>
-
-            <!-- RESULT SUCCESS -->
             <div v-if="result" class="success-card">
               <div class="success-header">
                 <div class="success-icon">✓</div>
@@ -435,13 +399,12 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
               <button class="btn-text" @click="file = null; result = null">Send another file</button>
             </div>
 
-            <!-- ERROR BANNER -->
+            
             <div v-if="error" class="error-msg">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
               <span>{{ error }}</span>
             </div>
 
-            <!-- SENT HISTORY -->
             <div v-if="sentHistory.length > 0 && !file && !result" class="history-block">
               <h4>Recent Uploads</h4>
               <ul>
@@ -456,8 +419,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
             </div>
           </div>
         </Transition>
-
-        <!-- DOWNLOAD SECTION -->
         <Transition name="fade-scale" mode="out-in">
           <div v-if="currentTab === 'download'" key="download" class="workspace centered-ws">
             <div class="download-container">
@@ -481,7 +442,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
               <div v-if="error" class="error-msg">{{ error }}</div>
             </div>
 
-            <!-- RECEIVED HISTORY -->
             <div v-if="receivedHistory.length > 0" class="history-block">
               <div class="h-head">
                 <h4>Received Files</h4>
@@ -504,7 +464,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
       </main>
     </div>
 
-    <!-- MODAL: PASSWORD -->
     <Transition name="modal">
       <div v-if="showPasswordModal" class="modal-backdrop">
         <div class="modal-card">
@@ -526,15 +485,10 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
         </div>
       </div>
     </Transition>
-
-    <!-- MODAL: SCANNER -->
-    
-
   </div>
 </template>
 
 <style scoped>
-/* --- FONT & RESET --- */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -546,9 +500,9 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
   --border: rgba(255, 255, 255, 0.08);
   --border-light: rgba(255, 255, 255, 0.15);
   
-  --primary: #6366f1; /* Indigo */
+  --primary: #6366f1;
   --primary-glow: rgba(99, 102, 241, 0.4);
-  --accent: #10b981;  /* Emerald */
+  --accent: #10b981;  
   
   --text-main: #f8fafc;
   --text-muted: #94a3b8;
@@ -562,7 +516,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
   --shadow-glow: 0 0 20px rgba(99, 102, 241, 0.15);
 }
 
-/* --- LAYOUT --- */
 .main-layout {
   position: relative;
   width: 100vw;
@@ -597,7 +550,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 
 @keyframes float { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(30px, -30px); } }
 
-/* --- APP CONTAINER (GLASSMORPHISM) --- */
 .app-container, .auth-wrapper {
   position: relative;
   z-index: 10;
@@ -618,7 +570,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 .auth-wrapper { justify-content: center; align-items: center; background: none; border: none; box-shadow: none; backdrop-filter: none; }
 .auth-panel { width: 100%; max-width: 440px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 24px; padding: 40px; box-shadow: var(--shadow-glow); }
 
-/* --- SIDEBAR --- */
 .sidebar {
   width: 280px;
   background: rgba(2, 6, 23, 0.4);
@@ -648,20 +599,16 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 .btn-ghost-danger { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px; background: none; border: none; color: #ef4444; cursor: pointer; font-size: 0.9rem; font-weight: 500; border-radius: 8px; transition: 0.2s; opacity: 0.8; }
 .btn-ghost-danger:hover { background: rgba(239, 68, 68, 0.1); opacity: 1; }
 
-/* --- MAIN CONTENT AREA --- */
 .content-area { flex: 1; padding: 40px; display: flex; flex-direction: column; overflow-y: auto; background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%); }
 
-/* Tab Nav */
 .tab-nav { position: relative; display: flex; background: var(--bg-surface); padding: 4px; border-radius: 12px; width: fit-content; margin: 0 auto 40px; border: 1px solid var(--border); }
 .tab-pill { position: absolute; top: 4px; left: 4px; width: calc(50% - 4px); height: calc(100% - 8px); background: var(--bg-hover); border-radius: 8px; transition: transform 0.25s cubic-bezier(0.2, 0, 0, 1); border: 1px solid rgba(255,255,255,0.05); }
 .tab-nav button { flex: 1; position: relative; z-index: 1; background: none; border: none; padding: 8px 32px; color: var(--text-muted); font-size: 0.9rem; font-weight: 500; cursor: pointer; transition: color 0.2s; min-width: 120px; }
 .tab-nav button.tab-active { color: white; font-weight: 600; }
 
-/* Workspace */
 .workspace { max-width: 500px; margin: 0 auto; width: 100%; display: flex; flex-direction: column; gap: 24px; }
 .centered-ws { align-items: center; }
 
-/* Dropzone */
 .dropzone {
   position: relative;
   height: 240px;
@@ -694,7 +641,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 .btn-icon-remove { background: transparent; border: 1px solid var(--border); width: 28px; height: 28px; border-radius: 50%; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; font-size: 12px; }
 .btn-icon-remove:hover { background: rgba(255,255,255,0.1); color: white; }
 
-/* Settings Form */
 .settings-panel { animation: slideUp 0.4s ease; }
 .form-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 24px; }
 .form-group label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; letter-spacing: 0.02em; }
@@ -712,11 +658,9 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 .btn-primary-lg:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79, 70, 229, 0.4); }
 .btn-primary-lg:disabled { opacity: 0.7; cursor: not-allowed; }
 
-/* Spinner */
 .spinner-svg { width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Success Result */
 .success-card { background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 16px; padding: 24px; text-align: center; animation: slideUp 0.4s ease; }
 .success-header { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 20px; }
 .success-icon { width: 32px; height: 32px; background: var(--accent); color: #022c22; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 14px; }
@@ -734,7 +678,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 .qr-img { width: 32px; height: 32px; cursor: zoom-in; }
 .btn-text { background: none; border: none; color: var(--text-dim); font-size: 0.85rem; cursor: pointer; text-decoration: underline; text-decoration-color: rgba(255,255,255,0.2); }
 
-/* Download Section */
 .download-container { text-align: center; width: 100%; max-width: 440px; }
 .download-header h2 { font-size: 1.8rem; margin-bottom: 8px; background: linear-gradient(to right, white, #cbd5e1); -webkit-background-clip: text; color: transparent; }
 .download-header p { color: var(--text-muted); font-size: 0.95rem; margin-bottom: 32px; }
@@ -747,7 +690,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 .download-action { background: linear-gradient(180deg, #10b981 0%, #059669 100%); }
 .download-action:hover { box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3); }
 
-/* History Lists */
 .history-block { margin-top: 32px; border-top: 1px solid var(--border); padding-top: 24px; width: 100%; }
 .h-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .history-block h4 { font-size: 0.75rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em; font-weight: 600; }
@@ -762,7 +704,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 .history-block li:hover .btn-history-del { opacity: 1; }
 .icon-box-sm { width: 24px; height: 24px; background: rgba(16, 185, 129, 0.1); color: var(--accent); border-radius: 6px; display: grid; place-items: center; font-size: 12px; }
 
-/* Modals */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(8px); z-index: 100; display: grid; place-items: center; }
 .modal-card { background: #1e293b; border: 1px solid var(--border-light); width: 90%; max-width: 400px; padding: 24px; border-radius: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.4); animation: scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
@@ -772,21 +713,19 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 .modal-input { margin-bottom: 20px; }
 .scanner-box { width: 100%; height: 250px; background: black; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
 
-/* Toasts */
 .toast-container { position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%); z-index: 200; }
 .toast-content { background: #0f172a; border: 1px solid var(--border-light); padding: 10px 20px; border-radius: 50px; color: white; font-size: 0.9rem; font-weight: 500; display: flex; align-items: center; gap: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
 .toast-dot { width: 8px; height: 8px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 10px var(--accent); }
 .toast-pop-enter-active, .toast-pop-leave-active { transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
 .toast-pop-enter-from, .toast-pop-leave-to { opacity: 0; transform: translate(-50%, 20px); }
 
-/* Transitions */
+
 .fade-scale-enter-active, .fade-scale-leave-active { transition: all 0.2s ease; }
 .fade-scale-enter-from { opacity: 0; transform: scale(0.98); }
 .fade-scale-leave-to { opacity: 0; transform: scale(0.98); }
 @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
 
-/* Mobile */
 @media (max-width: 900px) {
   .app-container { flex-direction: column; height: 100vh; width: 100%; max-width: 100%; border-radius: 0; border: none; }
   .sidebar { width: 100%; height: auto; flex-direction: row; align-items: center; padding: 16px; border-right: none; border-bottom: 1px solid var(--border); background: var(--bg-dark); }

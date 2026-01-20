@@ -2,11 +2,11 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Install libraries
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy code
+COPY my_model /app/my_model
 COPY . .
 
 # Start app

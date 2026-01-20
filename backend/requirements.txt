@@ -9,3 +9,5 @@ clamd
 requests
 pypdf
 bcrypt==4.1.2
+torch
+transformers

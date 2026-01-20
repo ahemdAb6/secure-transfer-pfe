@@ -9,7 +9,7 @@ const password = ref('')
 const loading = ref(false)
 const error = ref(null)
 
-// NEW: State to control the success message screen
+
 const registrationSuccess = ref(false)
 
 const handleSubmit = async () => {
@@ -34,7 +34,7 @@ const handleSubmit = async () => {
     const data = await res.json()
 
     if (isRegistering.value) {
-      // 🛑 CHANGED: No more alert(). We switch the UI state instead.
+
       registrationSuccess.value = true
     } else {
       if (data.role === 'ADMIN') {
@@ -50,8 +50,6 @@ const handleSubmit = async () => {
     loading.value = false
   }
 }
-
-// Helper to reset view to login
 const resetToLogin = () => {
   isRegistering.value = false
   registrationSuccess.value = false
@@ -64,7 +62,6 @@ const resetToLogin = () => {
 <template>
   <div class="login-container">
     
-    <!-- 1. SUCCESS SCREEN (Shows after register) -->
     <Transition name="fade" mode="out-in">
       <div v-if="registrationSuccess" class="success-panel">
         <div class="icon-circle">⏳</div>
@@ -77,7 +74,6 @@ const resetToLogin = () => {
         <button class="submit-btn" @click="resetToLogin">Return to Login</button>
       </div>
 
-      <!-- 2. LOGIN / REGISTER FORM (Standard View) -->
       <div v-else class="form-panel">
         <div class="header">
           <div class="logo-wrapper">
@@ -135,14 +131,11 @@ const resetToLogin = () => {
 * { box-sizing: border-box; }
 .login-container { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; font-family: 'Inter', sans-serif; color: #f8fafc; }
 
-/* SUCCESS PANEL STYLES */
 .success-panel { text-align: center; padding: 20px; animation: slideUp 0.4s ease; }
 .icon-circle { width: 64px; height: 64px; background: rgba(245, 158, 11, 0.1); color: #fbbf24; border-radius: 50%; display: grid; place-items: center; font-size: 32px; margin: 0 auto 20px; border: 1px solid rgba(245, 158, 11, 0.2); }
 .success-panel h2 { font-size: 1.5rem; margin-bottom: 10px; color: white; }
 .success-text { color: #94a3b8; font-size: 0.95rem; line-height: 1.6; margin-bottom: 30px; }
 .success-text strong { color: #fbbf24; }
-
-/* NORMAL FORM STYLES */
 .form-panel { animation: fadeIn 0.5s ease; }
 .header { text-align: center; margin-bottom: 32px; }
 .logo-wrapper { width: 48px; height: 48px; background: linear-gradient(135deg, #6366f1, #818cf8); border-radius: 12px; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; box-shadow: 0 0 25px rgba(99, 102, 241, 0.4); color: white; }
