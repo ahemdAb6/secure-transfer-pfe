@@ -4,7 +4,6 @@ import uuid
 import bcrypt
 import re
 import requests
-import json
 import io
 import threading
 import time
@@ -13,8 +12,7 @@ import smtplib
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from urllib.parse import quote 
-
+from urllib.parse import quote
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request, Body, BackgroundTasks
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -287,7 +285,8 @@ def scan_file_content(content: bytes, filename: str):
 #auth routes
 
 @app.post("/auth/register")
-async def register(email: str = Form(...), password: str = Form(...)):
+@limiter.limit("5/minute")
+async def register(request: Request,email: str = Form(...), password: str = Form(...)):
     if not r: 
         logger.error("Register failed: DB Offline")
         raise HTTPException(500, "DB Offline")
@@ -309,7 +308,8 @@ async def register(email: str = Form(...), password: str = Form(...)):
     return {"message": "Registered. Wait for approval."}
 
 @app.post("/auth/login")
-async def login(email: str = Form(...), password: str = Form(...)):
+@limiter.limit("5/minute")
+async def login(request: Request,email: str = Form(...), password: str = Form(...)):
  
     if email == ADMIN_EMAIL and password == ADMIN_PASS:
         token = str(uuid.uuid4())
