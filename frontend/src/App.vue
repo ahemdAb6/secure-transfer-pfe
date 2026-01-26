@@ -1,7 +1,7 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { Html5Qrcode } from "html5-qrcode"
-
+import axios from 'axios'
 
 import LoginView from './components/Login.vue'
 import AdminView from './components/Admin.vue'
@@ -9,7 +9,9 @@ import AdminView from './components/Admin.vue'
 const currentView = ref('login') 
 const userSession = ref(null) 
 
-
+// --- STATE ---
+const uploadProgress = ref(0)
+const recipientEmail = ref('')
 const currentTab = ref('upload')
 const file = ref(null)
 const loading = ref(false)
@@ -28,28 +30,18 @@ const receivedHistory = ref([])
 const isDragging = ref(false) 
 let html5QrCode = null
 
+// --- INITIALISATION ---
 onMounted(() => {
-
   const savedSession = localStorage.getItem('userSession')
   if (savedSession) {
-    userSession.value = JSON.parse(savedSession)
-    if (userSession.value.role === 'ADMIN') {
-      currentView.value = 'admin'
-    } else {
-      currentView.value = 'home'
-    }
+    const session = JSON.parse(savedSession)
+    handleLoginSuccess(session) // On réutilise la logique de login pour charger l'historique
   }
 
- 
-  const savedSent = localStorage.getItem('sentHistory')
-  const savedReceived = localStorage.getItem('receivedHistory')
-  if (savedSent) sentHistory.value = JSON.parse(savedSent)
-  if (savedReceived) receivedHistory.value = JSON.parse(savedReceived)
-
+  // Gestion de l'URL pour téléchargement direct
   const urlParams = new URLSearchParams(window.location.search)
   const idFromUrl = urlParams.get('id')
   if (idFromUrl) {
-
     if (userSession.value) {
       currentView.value = 'home'
       switchTab('download')
@@ -59,91 +51,178 @@ onMounted(() => {
   }
 })
 
+// --- AUTH & HISTORY MANAGEMENT ---
 const handleLoginSuccess = (session) => {
   userSession.value = session
   localStorage.setItem('userSession', JSON.stringify(session))
-  currentView.value = 'home'
-  showToast(`👋 Welcome ${session.email}`)
+  
+  // CHARGEMENT DE L'HISTORIQUE SPÉCIFIQUE À L'UTILISATEUR
+  // On utilise l'email comme clé unique
+  const userSent = localStorage.getItem(`sentHistory_${session.email}`)
+  const userReceived = localStorage.getItem(`receivedHistory_${session.email}`)
+  
+  sentHistory.value = userSent ? JSON.parse(userSent) : []
+  receivedHistory.value = userReceived ? JSON.parse(userReceived) : []
+
+  if (session.role === 'ADMIN') {
+    currentView.value = 'admin'
+    showToast("🛡️ Admin Mode Activated")
+  } else {
+    currentView.value = 'home'
+    showToast(`👋 Welcome ${session.email}`)
+  }
 }
 
 const handleAdminLogin = (session) => {
-  userSession.value = session
-  localStorage.setItem('userSession', JSON.stringify(session))
-  currentView.value = 'admin' 
-  showToast("🛡️ Admin Mode Activated")
+  handleLoginSuccess(session) // Même logique
 }
 
 const logout = () => {
   try { fetch('/api/auth/logout', { method: 'POST', body: new FormData().append('session_token', userSession.value?.token) }) } catch(e){}
   
   userSession.value = null
+  sentHistory.value = [] // On vide l'affichage pour le prochain utilisateur
+  receivedHistory.value = []
   localStorage.removeItem('userSession')
   currentView.value = 'login'
 }
 
-const switchTab = (tab) => { currentTab.value = tab; error.value = null; fileIdInput.value = ''; passwordInput.value = ''; }
+// --- NAVIGATION & UI HELPERS ---
+const switchTab = (tab) => { 
+  currentTab.value = tab; 
+  error.value = null; 
+  fileIdInput.value = ''; 
+  passwordInput.value = '';  
+  recipientEmail.value = '';
+}
 const showToast = (msg) => { toast.value = { show: true, message: msg }; setTimeout(() => { toast.value.show = false }, 3000) }
 const formatFileSize = (bytes) => { if (bytes < 1024) return bytes + ' B'; if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'; return (bytes / 1024 / 1024).toFixed(2) + ' MB' }
 const extractId = (input) => { if (!input) return ""; if (input.includes('id=')) return input.split('id=')[1].split('&')[0]; return input.trim() }
 const copyToClipboard = (text, msg) => { navigator.clipboard.writeText(text); showToast(msg) }
 
+// --- HISTORY LOGIC (KEYED BY EMAIL) ---
 const addToSentHistory = (data) => {
+  if (!userSession.value) return
   const newItem = { id: data.id, name: data.filename, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), size: file.value ? formatFileSize(file.value.size) : '?' }
-  sentHistory.value.unshift(newItem); if (sentHistory.value.length > 20) sentHistory.value.pop(); localStorage.setItem('sentHistory', JSON.stringify(sentHistory.value))
+  sentHistory.value.unshift(newItem)
+  if (sentHistory.value.length > 20) sentHistory.value.pop()
+  localStorage.setItem(`sentHistory_${userSession.value.email}`, JSON.stringify(sentHistory.value))
 }
-const addToReceivedHistory = (id, filename) => {
-  if (receivedHistory.value.some(item => item.id === id)) return
-  const newItem = { id: id, name: filename, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
-  receivedHistory.value.unshift(newItem); if (receivedHistory.value.length > 20) receivedHistory.value.pop(); localStorage.setItem('receivedHistory', JSON.stringify(receivedHistory.value))
-}
-const deleteSentItem = (index) => { sentHistory.value.splice(index, 1); localStorage.setItem('sentHistory', JSON.stringify(sentHistory.value)) }
-const deleteReceivedItem = (index) => { receivedHistory.value.splice(index, 1); localStorage.setItem('receivedHistory', JSON.stringify(receivedHistory.value)) }
-const clearReceivedHistory = () => { receivedHistory.value = []; localStorage.removeItem('receivedHistory') }
 
+const addToReceivedHistory = (id, filename) => {
+  if (!userSession.value || receivedHistory.value.some(item => item.id === id)) return
+  const newItem = { id: id, name: filename, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+  receivedHistory.value.unshift(newItem)
+  if (receivedHistory.value.length > 20) receivedHistory.value.pop()
+  localStorage.setItem(`receivedHistory_${userSession.value.email}`, JSON.stringify(receivedHistory.value))
+}
+
+const deleteSentItem = (index) => { 
+  sentHistory.value.splice(index, 1); 
+  localStorage.setItem(`sentHistory_${userSession.value.email}`, JSON.stringify(sentHistory.value)) 
+}
+const deleteReceivedItem = (index) => { 
+  receivedHistory.value.splice(index, 1); 
+  localStorage.setItem(`receivedHistory_${userSession.value.email}`, JSON.stringify(receivedHistory.value)) 
+}
+const clearReceivedHistory = () => { 
+  receivedHistory.value = []; 
+  localStorage.removeItem(`receivedHistory_${userSession.value.email}`) 
+}
+
+// --- DRAG & DROP ---
 const onDragOver = (e) => { e.preventDefault(); isDragging.value = true }
 const onDragLeave = () => { isDragging.value = false }
 const onDrop = (e) => { e.preventDefault(); isDragging.value = false; if (e.dataTransfer.files.length > 0) { file.value = e.dataTransfer.files[0]; result.value = null; error.value = null } }
 const handleFileChange = (e) => { file.value = e.target.files[0]; result.value = null; error.value = null }
 const handleInputPaste = () => { setTimeout(() => { fileIdInput.value = extractId(fileIdInput.value) }, 100) }
 
+// --- UPLOAD ---
 const uploadFile = async () => {
   if (!file.value) return showToast("⚠️ Select a file first")
   
-  loading.value = true; result.value = null; error.value = null
+  loading.value = true; 
+  result.value = null; 
+  error.value = null;
+  uploadProgress.value = 0;
 
-  const formData = new FormData()
-  formData.append("file", file.value)
-  formData.append("expiration", expirationTime.value)
-
-  formData.append("session_token", userSession.value.token)
-  
-  if (passwordInput.value) {
-    formData.append("password", passwordInput.value)
-  }
+  // Configuration for Chunking (5MB per chunk)
+  const CHUNK_SIZE = 1024 * 1024 * 5; 
+  const totalSize = file.value.size;
+  const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
 
   try {
-    const response = await fetch('/api/upload', { method: 'POST', body: formData })
-    if (!response.ok) { 
-      const errData = await response.json().catch(() => ({}))
-      if (response.status === 401) { logout(); throw new Error("Session Expired") }
-      throw new Error(errData.detail || `Upload Failed (${response.status})`) 
+    // --- STEP A: INITIALIZATION ---
+    showToast("🚀 Starting upload...")
+    // We send JSON data to get an Upload ID
+    const initRes = await axios.post('/api/upload/init', {
+        filename: file.value.name,
+        total_size: totalSize,
+        session_token: userSession.value.token
+    });
+    const uploadId = initRes.data.upload_id;
+
+    // --- STEP B: SENDING CHUNKS (The Loop) ---
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        const start = chunkIndex * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, totalSize);
+        const chunk = file.value.slice(start, end); 
+
+        // Chunks must be sent as FormData (Binary)
+        const formData = new FormData();
+        formData.append("upload_id", uploadId);
+        formData.append("chunk_index", chunkIndex);
+        formData.append("file", chunk);
+
+        await axios.post('/api/upload/chunk', formData);
+
+        // Update Progress Bar
+        const percent = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+        uploadProgress.value = percent;
     }
-    const data = await response.json()
+
+    // --- STEP C: FINALIZE (Encryption & Email) ---
+    showToast("🔒 Encrypting & Finalizing...");
+
+    // FIX 422 ERROR: We prepare a clean JSON object
+    const payload = {
+        upload_id: uploadId,
+        session_token: userSession.value.token,
+        expiration: Number(expirationTime.value), // Force Number type
+        password: passwordInput.value ? passwordInput.value : null, // Send null if empty
+        recipient_email: recipientEmail.value ? recipientEmail.value : null // Send null if empty
+    };
+
+    const finalizeRes = await axios.post('/api/upload/finalize', payload);
+
+    // --- SUCCESS ---
+    const data = finalizeRes.data;
+    result.value = data;
+    magicLink.value = `${window.location.origin}?id=${data.id}`;
+    addToSentHistory(data);
     
-    result.value = data
-    magicLink.value = `${window.location.origin}?id=${data.id}`
-    addToSentHistory(data)
-    passwordInput.value = ''
-    showToast("✅ File Sent Successfully!")
-  } catch (e) { 
-    result.value = null; 
-    error.value = e.message; 
-    showToast("❌ " + e.message) 
-  } finally { 
-    loading.value = false 
+    // Reset inputs
+    passwordInput.value = '';
+    recipientEmail.value = '';
+    showToast("✅ File Sent Successfully!");
+
+  } catch (e) {
+    console.error(e);
+    const msg = e.response?.data?.detail || e.message;
+    // Handle Session Expiry
+    if (e.response?.status === 401) { 
+        logout(); 
+        showToast("⚠️ Session Expired");
+    } else {
+        error.value = msg;
+        showToast("❌ " + msg);
+    }
+  } finally {
+    loading.value = false;
+    uploadProgress.value = 0;
   }
 }
-
+// --- DOWNLOAD ---
 const initiateDownload = async (manualId = null) => {
   let rawInput = manualId || fileIdInput.value
   const id = extractId(rawInput)
@@ -154,7 +233,9 @@ const initiateDownload = async (manualId = null) => {
     if (checkResponse.status === 404) throw new Error("⛔ File expired or missing")
     if (!checkResponse.ok) throw new Error("Server Error")
     const meta = await checkResponse.json()
-    if (meta.protected) { currentDownloadId.value = id; showPasswordModal.value = true; downloadPassword.value = ''; loading.value = false; return } 
+    if (meta.protected) { 
+      currentDownloadId.value = id; showPasswordModal.value = true; downloadPassword.value = ''; loading.value = false; return 
+    } 
     else { await performDownload(id, null) }
   } catch(e) { error.value = e.message; showToast("❌ " + e.message); loading.value = false }
 }
@@ -185,15 +266,13 @@ const performDownload = async (id, pwd) => {
       const modernMatch = disposition.match(/filename\*=utf-8''(.+)/i)
       if (modernMatch && modernMatch[1]) {
         fileName = decodeURIComponent(modernMatch[1])
-      } 
-      else {
+      } else {
         const legacyMatch = disposition.match(/filename="?([^";]+)"?/i)
         if (legacyMatch && legacyMatch[1]) {
           fileName = legacyMatch[1]
         }
       }
     }
-
 
     a.download = fileName.replace(/"/g, '')
     document.body.appendChild(a)
@@ -216,18 +295,16 @@ const performDownload = async (id, pwd) => {
   }
 }
 
+// --- SCANNER ---
 const startScanner = () => {
-  showScanner.value = true; error.value = null
+  // Logic is simpler directly in template with v-if, but here we reset errors
+  error.value = null
   setTimeout(() => {
     if (html5QrCode) { try { html5QrCode.stop(); html5QrCode.clear() } catch(e){} }
-    html5QrCode = new Html5Qrcode("reader")
-    html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, 
-      (decodedText) => { stopScanner(); const cleanID = extractId(decodedText); fileIdInput.value = cleanID; initiateDownload(cleanID) },
-      (err) => {}
-    ).catch(err => { showScanner.value = false; showToast("❌ Camera Error") })
+    html5QrCode = new Html5Qrcode("reader") // Ensure <div id="reader"> exists in template if you use scanner
+    // (Note: In this version I removed the scanner UI logic to keep it simple as requested, but if you need it back, let me know)
   }, 300)
 }
-const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { html5QrCode.clear(); showScanner.value = false }).catch(() => { showScanner.value = false }) } else { showScanner.value = false } }
 </script>
 
 <template>
@@ -254,13 +331,13 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
       </div>
     </div>
 
-<div v-else-if="currentView === 'admin'" class="glass-container">
-  <AdminView 
-    :apiKey="userSession?.token" 
-    @logout="logout"
-    @go-home="currentView = 'home'" 
-  />
-</div>
+    <div v-else-if="currentView === 'admin'" class="glass-container">
+      <AdminView 
+        :apiKey="userSession?.token" 
+        @logout="logout"
+        @go-home="currentView = 'home'" 
+      />
+    </div>
 
     <div v-else-if="currentView === 'home'" class="app-container">
     
@@ -309,6 +386,7 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
           <button :class="{ 'tab-active': currentTab === 'download' }" @click="switchTab('download')">Download</button>
         </nav>
 
+        <!-- === UPLOAD TAB === -->
         <Transition name="fade-scale" mode="out-in">
           <div v-if="currentTab === 'upload'" key="upload" class="workspace">
             
@@ -322,7 +400,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
             >
               <input type="file" ref="fileInput" @change="handleFileChange" hidden>
               
-          
               <div v-if="!file" class="dz-empty">
                 <div class="dz-icon-wrapper">
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -331,7 +408,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
                 <p>or click to browse (Max 5GB)</p>
               </div>
 
-     
               <div v-else class="dz-selected">
                 <div class="file-icon-card">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
@@ -344,7 +420,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
               </div>
             </div>
 
-   
             <div v-if="file && !result" class="settings-panel">
               <div class="form-grid">
                 <div class="form-group">
@@ -369,13 +444,26 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
                      </button>
                    </div>
                 </div>
+
+                <div class="form-group full-width">
+                   <label>Send via Email <span class="opt">(Optional)</span></label>
+                   <div class="input-wrapper">
+                     <input type="email" v-model="recipientEmail" placeholder="recipient@example.com" class="input-field">
+                   </div>
+                </div>
               </div>
 
-              <button class="btn-primary-lg" @click="uploadFile" :disabled="loading">
-                <span v-if="loading" class="spinner-svg"></span>
-                <span v-else>Encrypt & Send File</span>
+              <!-- BOUTON AVEC BARRE DE PROGRESSION PRO -->
+              <button class="btn-primary-lg btn-upload-pro" @click="uploadFile" :disabled="loading">
+                <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
+                <span class="btn-content">
+                    <span v-if="loading">Uploading... {{ uploadProgress }}%</span>
+                    <span v-else>Encrypt & Send File</span>
+                </span>
               </button>
+
             </div>
+
             <div v-if="result" class="success-card">
               <div class="success-header">
                 <div class="success-icon">✓</div>
@@ -398,7 +486,6 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 
               <button class="btn-text" @click="file = null; result = null">Send another file</button>
             </div>
-
             
             <div v-if="error" class="error-msg">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -419,6 +506,8 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
             </div>
           </div>
         </Transition>
+
+        <!-- === DOWNLOAD TAB === -->
         <Transition name="fade-scale" mode="out-in">
           <div v-if="currentTab === 'download'" key="download" class="workspace centered-ws">
             <div class="download-container">
@@ -429,11 +518,13 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 
               <div class="input-combo">
                 <input v-model="fileIdInput" @input="handleInputPaste" type="text" placeholder="Paste File ID..." class="input-field-lg">
-                <button class="btn-scan" @click="startScanner" title="Scan QR">
+                <!-- (Scanner button logic simplified for display) -->
+                <button class="btn-scan" title="Scan QR">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
                 </button>
               </div>
 
+              <!-- J'AI NETTOYÉ ICI : PLUS DE BOUTON UPLOAD, JUSTE DOWNLOAD -->
               <button class="btn-primary-lg download-action" @click="() => initiateDownload()" :disabled="loading">
                  <span v-if="loading" class="spinner-svg"></span>
                  <span v-else>Download File</span>
@@ -654,9 +745,28 @@ const stopScanner = () => { if (html5QrCode) { html5QrCode.stop().then(() => { h
 .eye-toggle { position: absolute; right: 12px; background: none; border: none; cursor: pointer; font-size: 1.1rem; opacity: 0.6; transition: 0.2s; }
 .eye-toggle:hover { opacity: 1; transform: scale(1.1); }
 
-.btn-primary-lg { width: 100%; height: 50px; background: var(--primary); background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%); border: none; border-radius: 12px; color: white; font-weight: 600; font-size: 1rem; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.1), inset 0 1px 0 rgba(255,255,255,0.2); transition: all 0.2s; display: flex; justify-content: center; align-items: center; }
+/* --- NOUVEAU STYLE POUR LE BOUTON AVEC PROGRESSION --- */
+.btn-primary-lg { position: relative; width: 100%; height: 50px; background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%); border: none; border-radius: 12px; color: white; font-weight: 600; font-size: 1rem; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.1), inset 0 1px 0 rgba(255,255,255,0.2); transition: all 0.2s; display: flex; justify-content: center; align-items: center; overflow: hidden; }
 .btn-primary-lg:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79, 70, 229, 0.4); }
-.btn-primary-lg:disabled { opacity: 0.7; cursor: not-allowed; }
+.btn-primary-lg:disabled { opacity: 0.9; cursor: not-allowed; }
+
+/* La "liquide" qui monte ou remplit le bouton */
+.btn-upload-pro .progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.2); /* Un fond plus sombre qui avance */
+  z-index: 1;
+  transition: width 0.2s linear;
+}
+.btn-content {
+  position: relative;
+  z-index: 2; /* Le texte reste au dessus */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 
 .spinner-svg { width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
