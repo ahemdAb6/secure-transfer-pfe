@@ -21,7 +21,12 @@ from pydantic import BaseModel
 import logging
 from logging.handlers import RotatingFileHandler 
 
-# --- CRYPTO IMPORTS ---
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 
@@ -29,24 +34,33 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 import torch.nn.functional as F
 
-# --- LOGGING SETUP ---
+log_formatter = logging.Formatter('%(asctime)s - [%(levelname)s] - [%(client_ip)s] - %(message)s')
+
+class IPFilter(logging.Filter):
+    def filter(self, record):
+        if not hasattr(record, 'client_ip'):
+            record.client_ip = 'SYSTEM'
+        return True
+
 log_handler = RotatingFileHandler(
     "securetransfer.log", 
-    maxBytes=5 * 1024 * 1024, 
-    backupCount=3,            
+    maxBytes=10 * 1024 * 1024, 
+    backupCount=5,            
     encoding='utf-8'
 )
+log_handler.setFormatter(log_formatter)
+log_handler.addFilter(IPFilter())
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[log_handler, logging.StreamHandler()]
-)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+console_handler.addFilter(IPFilter())
+
+logging.basicConfig(level=logging.INFO, handlers=[log_handler, console_handler])
 logger = logging.getLogger(__name__)
 
-logger.info("🚀 SecureTransfer API starting...")
+logger.info("🚀 SecureTransfer API starting...", extra={'client_ip': 'BOOT'})
 
-# --- ENV & CONFIG ---
+
 try:
     from dotenv import load_dotenv
     load_dotenv() 
@@ -56,57 +70,65 @@ try:
     import redis
 except ImportError:
     redis = None
-    logger.warning("⚠️ Redis lib missing")
+    logger.warning("⚠️ Redis lib missing", extra={'client_ip': 'SYSTEM'})
 
 try:
     import clamd
 except ImportError:
     clamd = None
-    logger.warning("⚠️ ClamAV lib missing")
+    logger.warning("⚠️ ClamAV lib missing", extra={'client_ip': 'SYSTEM'})
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL") 
-ADMIN_PASS = os.getenv("ADMIN_PASS")
+ADMIN_PASS_HASH = os.getenv("ADMIN_PASS_HASH") 
 ADMIN_SECRET = os.getenv("ADMIN_SECRET")
-REDIS_HOST = os.getenv("REDIS_HOST") 
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost") 
 SMTP_EMAIL = os.getenv("SMTP_EMAIL")       
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD") 
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 
-# --- REDIS CONNECTION ---
+
 r = None
+redis_url = f"redis://{REDIS_HOST}:6379"
+
 if redis:
     try:
         r = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
         r.ping()
-        logger.info("✅ Redis Connected")
+        logger.info("✅ Redis Connected", extra={'client_ip': 'SYSTEM'})
     except Exception as e:
-        logger.error(f"⚠️ Redis Connection Failed: {str(e)}")
+        logger.error(f"⚠️ Redis Connection Failed: {str(e)}", extra={'client_ip': 'SYSTEM'})
+        redis_url = "memory://"
 
-# --- AI MODEL LOADING ---
+
+limiter = Limiter(key_func=get_remote_address, storage_uri=redis_url)
+
 MODEL_PATH = "/app/my_model"
 ai_tokenizer = None
 ai_model = None
 
 try:
-    logger.info("⏳ Loading AI Model...")
+    logger.info("⏳ Loading AI Model...", extra={'client_ip': 'SYSTEM'})
     ai_tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
     ai_model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
-    logger.info("✅ AI Model Loaded Successfully")
+    logger.info("✅ AI Model Loaded Successfully", extra={'client_ip': 'SYSTEM'})
 except Exception:
     try:
-        logger.info("⚠️ Docker path failed, trying local path...")
+        logger.info("⚠️ Docker path failed, trying local path...", extra={'client_ip': 'SYSTEM'})
         ai_tokenizer = AutoTokenizer.from_pretrained("./my_model")
         ai_model = AutoModelForSequenceClassification.from_pretrained("./my_model")
-        logger.info("✅ AI Model Loaded Successfully (Local)")
+        logger.info("✅ AI Model Loaded Successfully (Local)", extra={'client_ip': 'SYSTEM'})
     except Exception:
-        logger.warning("❌ Failed to load AI model. AI features disabled.")
+        logger.warning("❌ Failed to load AI model. AI features disabled.", extra={'client_ip': 'SYSTEM'})
 
-# --- FASTAPI SETUP ---
 app = FastAPI()
+
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -117,7 +139,21 @@ app.add_middleware(
     expose_headers=["Content-Disposition"]
 )
 
-# --- MODELS ---
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    client_ip = request.client.host
+    
+    old_factory = logging.getLogRecordFactory()
+    def record_factory(*args, **kwargs):
+        record = old_factory(*args, **kwargs)
+        record.client_ip = client_ip
+        return record
+    logging.setLogRecordFactory(record_factory)
+
+    response = await call_next(request)
+    return response
+
 class InitUploadModel(BaseModel):
     filename: str
     total_size: int
@@ -130,8 +166,7 @@ class FinalizeUploadModel(BaseModel):
     password: Optional[str] = None
     recipient_email: Optional[str] = None
 
-# --- CRYPTO HELPERS (STREAMING) ---
-def encrypt_file_stream(source_path, dest_path, key):
+def cryptage(source_path, dest_path, key):
     iv = os.urandom(16)
     cipher = Cipher(algorithms.AES(key), modes.CTR(iv), backend=default_backend())
     encryptor = cipher.encryptor()
@@ -143,7 +178,7 @@ def encrypt_file_stream(source_path, dest_path, key):
             f_out.write(encryptor.update(chunk))
         f_out.write(encryptor.finalize())
 
-def iter_file_decrypt(file_path, key):
+def decrypte(file_path, key):
     with open(file_path, "rb") as f:
         iv = f.read(16)
         cipher = Cipher(algorithms.AES(key), modes.CTR(iv), backend=default_backend())
@@ -154,13 +189,15 @@ def iter_file_decrypt(file_path, key):
             yield decryptor.update(chunk)
         yield decryptor.finalize()
 
-# --- HELPER FUNCTIONS ---
 def hash_password(pwd: str) -> str:
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(pwd.encode('utf-8'), salt).decode('utf-8')
 
 def verify_password(pwd: str, hashed_pwd: str) -> bool:
-    return bcrypt.checkpw(pwd.encode('utf-8'), hashed_pwd.encode('utf-8'))
+    try:
+        return bcrypt.checkpw(pwd.encode('utf-8'), hashed_pwd.encode('utf-8'))
+    except Exception:
+        return False
 
 def get_current_user_email(session_token: str):
     if not session_token or not r: return None
@@ -210,8 +247,7 @@ def scan_file_content(content: bytes, filename: str):
 
         patterns = {
             "AWS Key": r'AKIA[0-9A-Z]{16}',
-            "Private Key": r'BEGIN RSA PRIVATE KEY',
-            "Hardcoded Password": r'(?:password|secret)\s*=\s*[\'"][^\'"]+[\'"]'
+            "Private Key": r'-----BEGIN.*PRIVATE KEY-----',
         }
         for threat, regex in patterns.items():
             if re.search(regex, text_preview):
@@ -229,20 +265,6 @@ def scan_file_content(content: bytes, filename: str):
                 logger.warning(f"🚫 AI BLOCKED {filename}")
                 raise HTTPException(status_code=400, detail="⚠️ AI SECURITY ALERT: Sensitive Data Detected.")
     except HTTPException as he: raise he
-    except Exception: pass
-
-def send_email_notification(to_email: str, subject: str, message: str):
-    if not SMTP_EMAIL: return
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = f"SecureTransfer <{SMTP_EMAIL}>"
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(message, 'plain'))
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(SMTP_EMAIL, SMTP_PASSWORD)
-            server.send_message(msg)
-        logger.info(f"📧 Admin Email sent to {to_email}")
     except Exception: pass
 
 def send_file_notification(to_email: str, filename: str, link: str, sender: str):
@@ -275,7 +297,8 @@ def send_file_notification(to_email: str, filename: str, link: str, sender: str)
 
 # --- AUTH ROUTES ---
 @app.post("/auth/register")
-async def register(email: str = Form(...), password: str = Form(...)):
+@limiter.limit("5/minute")
+async def register(request: Request, email: str = Form(...), password: str = Form(...)):
     if not r: raise HTTPException(500, "DB Offline")
     if r.exists(f"user:{email}"): raise HTTPException(400, "Email exists")
     user_data = {"email": email, "password_hash": hash_password(password), "status": "PENDING", "created_at": time.time(), "limit": 50}
@@ -284,12 +307,18 @@ async def register(email: str = Form(...), password: str = Form(...)):
     return {"message": "Registered. Wait for approval."}
 
 @app.post("/auth/login")
-async def login(email: str = Form(...), password: str = Form(...)):
-    if email == ADMIN_EMAIL and password == ADMIN_PASS:
-        token = str(uuid.uuid4())
-        if r: r.setex(f"session:{token}", 86400, ADMIN_EMAIL)
-        logger.info(f"🛡️ Admin Logged In: {email}")
-        return {"message": "Admin", "token": token, "email": email, "role": "ADMIN"}
+@limiter.limit("5/minute")
+async def login(request: Request, email: str = Form(...), password: str = Form(...)):
+    if email == ADMIN_EMAIL:
+        if ADMIN_PASS_HASH and verify_password(password, ADMIN_PASS_HASH):
+            token = str(uuid.uuid4())
+            if r: r.setex(f"session:{token}", 86400, ADMIN_EMAIL)
+            logger.info(f"🛡️ Admin Logged In: {email}")
+            return {"message": "Admin", "token": token, "email": email, "role": "ADMIN"}
+        else:
+            logger.warning(f"🛡️ Admin Login Failed (Bad Password): {email}")
+            raise HTTPException(401, "Invalid admin credentials")
+
     if not r: raise HTTPException(500, "DB Offline")
     user_key = f"user:{email}"
     if not r.exists(user_key): raise HTTPException(401, "Invalid credentials")
@@ -312,7 +341,7 @@ async def logout(request: Request):
         logger.info(f"👋 User Logged Out: {email}")
     return {"message": "Logged out"}
 
-# --- ADMIN ROUTES ---
+# admin routes
 @app.get("/admin/dashboard")
 async def admin_dashboard(key: str):
     if not verify_admin(key): raise HTTPException(403, "Access Denied")
@@ -367,11 +396,37 @@ async def user_limit(key: str = Body(...), email: str = Body(...), limit: int = 
     r.hset(f"user:{email}", "limit", limit)
     return {"message": "Limit updated"}
 
-# --- CHUNKING UPLOAD ROUTES (OPTIMIZED RAM) ---
+#CHUNKING 
 
 @app.post("/upload/init")
-async def init_upload(data: InitUploadModel):
+@limiter.limit("20/minute")
+async def init_upload(request: Request, data: InitUploadModel):
     sender_email = get_current_user_email(data.session_token)
+    MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024 
+    
+    
+    ALLOWED_EXTENSIONS = {
+       
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv', '.rtf', '.odt','.bin',
+        
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.svg', '.ico',
+      
+        '.zip', '.rar', '.7z', '.tar', '.gz',
+        
+        '.py', '.js', '.html', '.css', '.json', '.xml', '.c', '.cpp', '.java', '.sql',
+       
+        '.exe', '.msi', '.apk', '.iso',
+        
+        '.mp3', '.wav', '.mp4', '.avi', '.mov', '.mkv'
+    }
+
+    if data.total_size > MAX_FILE_SIZE:
+        raise HTTPException(413, "File too large")
+
+    ext = os.path.splitext(data.filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, "File type not allowed")
+
     if not sender_email: raise HTTPException(401, "Unauthorized")
     upload_id = str(uuid.uuid4())
     temp_path = os.path.join(UPLOAD_DIR, f"temp_{upload_id}")
@@ -383,13 +438,15 @@ async def init_upload(data: InitUploadModel):
 
 @app.post("/upload/chunk")
 async def upload_chunk(upload_id: str = Form(...), file: UploadFile = File(...)):
+
     temp_path = os.path.join(UPLOAD_DIR, f"temp_{upload_id}")
     with open(temp_path, "ab") as f:
         f.write(await file.read())
     return {"status": "ok"}
 
 @app.post("/upload/finalize")
-async def finalize_upload(background_tasks: BackgroundTasks, request: Request, data: FinalizeUploadModel):
+@limiter.limit("10/minute")
+async def finalize_upload(request: Request, background_tasks: BackgroundTasks, data: FinalizeUploadModel):
     meta_key = f"upload_meta:{data.upload_id}"
     if not r.exists(meta_key): raise HTTPException(404, "Upload not found")
     meta = r.hgetall(meta_key)
@@ -401,7 +458,6 @@ async def finalize_upload(background_tasks: BackgroundTasks, request: Request, d
 
     logger.info(f"🛡️ Security Scan starting for: {filename}")
     try:
-        # 1. SMART SECURITY
         with open(temp_path, "rb") as f:
             header_content = f.read(10 * 1024 * 1024) 
             scan_file_content(header_content, filename) 
@@ -416,13 +472,13 @@ async def finalize_upload(background_tasks: BackgroundTasks, request: Request, d
             else:
                 logger.warning(f"⏩ Virus scan skipped (Large File): {filename}")
 
-        # 2. ENCRYPTION
+
         logger.info(f"🔐 Encrypting {filename} (Streaming Mode)...")
         key = os.urandom(32) 
         final_id = str(uuid.uuid4())
         final_path = os.path.join(UPLOAD_DIR, f"{final_id}.enc")
         
-        encrypt_file_stream(temp_path, final_path, key)
+        cryptage(temp_path, final_path, key)
             
         os.remove(temp_path)
         r.delete(meta_key)
@@ -461,17 +517,18 @@ async def finalize_upload(background_tasks: BackgroundTasks, request: Request, d
 
     return {"id": final_id, "filename": filename, "message": "Success"}
 
-# --- DOWNLOAD ROUTES (STREAMING) ---
 
 @app.get("/check/{file_id}")
-async def check_file_info(file_id: str):
+@limiter.limit("30/minute")
+async def check_file_info(request: Request, file_id: str):
     if not r: raise HTTPException(500)
     data = r.hgetall(file_id)
     if not data: raise HTTPException(404)
     return {"found": True, "protected": "password_hash" in data, "filename": data["filename"]}
 
 @app.post("/download/{file_id}")
-async def download_file(file_id: str, password: str = Body(None, embed=True)):
+@limiter.limit("10/minute")
+async def download_file(request: Request, file_id: str, password: str = Body(None, embed=True)):
     if not r: raise HTTPException(500)
     data = r.hgetall(file_id)
     if not data: raise HTTPException(404)
@@ -493,7 +550,7 @@ async def download_file(file_id: str, password: str = Body(None, embed=True)):
         filename_encoded = quote(data["filename"])
         
         return StreamingResponse(
-            iter_file_decrypt(path, key),
+            decrypte(path, key),
             media_type="application/octet-stream", 
             headers={"Content-Disposition": f"attachment; filename*=utf-8''{filename_encoded}"}
         )
@@ -501,20 +558,28 @@ async def download_file(file_id: str, password: str = Body(None, embed=True)):
         logger.error(f"Download Error: {str(e)}")
         raise HTTPException(500, "Download Error")
 
-# --- CLEANUP TASK ---
 def cleanup():
     while True:
         time.sleep(300) 
         try:
+            now = time.time()
             if r:
                 for f in os.listdir(UPLOAD_DIR):
+                    file_path = os.path.join(UPLOAD_DIR, f)
                     if f.endswith(".enc"):
                         file_id = f.replace(".enc", "")
                         if not r.exists(file_id):
-                            try: os.remove(os.path.join(UPLOAD_DIR, f))
+                            try: os.remove(file_path)
+                            except: pass
+                    elif f.startswith("temp_"):
+                        if os.stat(file_path).st_mtime < now - 3600:
+                            try: 
+                                os.remove(file_path)
+                                logger.info(f"🧹 Cleaned up old temp file: {f}")
                             except: pass
         except Exception: pass
 
 @app.on_event("startup")
 def start_tasks():
     threading.Thread(target=cleanup, daemon=True).start()
+    logger.info(f"cleanup start:🧼", extra={'client_ip': 'SYSTEM'})
