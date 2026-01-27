@@ -1,3 +1,4 @@
+import zipfile
 import shutil
 import os
 import uuid
@@ -8,7 +9,6 @@ import threading
 import time
 import smtplib
 import base64
-from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
@@ -82,7 +82,7 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL") 
-ADMIN_PASS_HASH = os.getenv("ADMIN_PASS_HASH") 
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD") 
 ADMIN_SECRET = os.getenv("ADMIN_SECRET")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost") 
 SMTP_EMAIL = os.getenv("SMTP_EMAIL")       
@@ -229,8 +229,24 @@ def scan_file_content(content: bytes, filename: str):
     logger.info(f"🤖 Starting AI DLP Scan for {filename}...")
     text_preview = ""
     MAX_PAGES = 5    
+    
     try:
-        if filename.lower().endswith(".pdf"):
+        if filename.lower().endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as z:
+                    file_names = z.namelist()
+                    logger.info(f"📂 Zip contains: {file_names}")
+                    
+                    text_preview += " ".join(file_names) + "\n"
+                    
+                    for subfile in file_names[:5]:
+                        if subfile.endswith(('.txt', '.py', '.json', '.xml', '.html', '.js')):
+                            with z.open(subfile) as f:
+                                text_preview += f.read(10240).decode('utf-8', errors='ignore') + "\n"
+            except Exception as e:
+                logger.warning(f"⚠️ Could not read Zip content: {e}")
+
+        elif filename.lower().endswith(".pdf"):
             try:
                 pdf_file = io.BytesIO(content)
                 reader = PdfReader(pdf_file)
@@ -239,6 +255,7 @@ def scan_file_content(content: bytes, filename: str):
                     page_text = reader.pages[i].extract_text()
                     if page_text: text_preview += page_text + "\n"
             except: pass
+            
         else:
             try: text_preview = content[:10000].decode('utf-8', errors='ignore')
             except: return "SAFE"
@@ -251,9 +268,10 @@ def scan_file_content(content: bytes, filename: str):
         }
         for threat, regex in patterns.items():
             if re.search(regex, text_preview):
-                logger.warning(f"🚫 BLOCKED: {threat} detected in {filename}")
-                raise HTTPException(status_code=400, detail=f"⚠️ SECURITY ALERT: {threat} Detected.")
+                logger.warning(f"🚫 BLOCKED: {threat} detected inside {filename}")
+                raise HTTPException(status_code=400, detail=f"⚠️ SECURITY ALERT: {threat} Detected inside file/archive.")
 
+        
         if ai_tokenizer and ai_model:
             inputs = ai_tokenizer(text_preview, return_tensors="pt", truncation=True, max_length=512, padding=True)
             with torch.no_grad(): outputs = ai_model(**inputs)
@@ -264,9 +282,55 @@ def scan_file_content(content: bytes, filename: str):
             if danger_score > 50:
                 logger.warning(f"🚫 AI BLOCKED {filename}")
                 raise HTTPException(status_code=400, detail="⚠️ AI SECURITY ALERT: Sensitive Data Detected.")
+                
     except HTTPException as he: raise he
     except Exception: pass
+def send_status_notification(to_email: str, action_type: str):
+    if not SMTP_EMAIL: return
+    
+    if action_type == "APPROVE":
+        subject = "✅ Account Approved"
+        color = "#10b981" 
+        title = "Account Activated"
+        body = "Your account has been approved. You can now log in."
+    elif action_type == "BAN":
+        subject = "⛔ Account Suspended"
+        color = "#ef4444" 
+        title = "Account Suspended"
+        body = "Your account has been banned due to policy violations. Contact admin for support."
+    elif action_type == "DELETE":
+        subject = "🗑️ Account Deleted"
+        color = "#6b7280" 
+        title = "Account Deleted"
+        body = "Your account and data have been permanently removed from our servers."
+    else:
+        return
 
+    try:
+        html_content = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; color: #333;">
+            <div style="padding: 20px; border: 1px solid #ddd; border-radius: 10px; max-width: 500px;">
+              <h2 style="color: {color};">{title}</h2>
+              <p>Hello,</p>
+              <p>{body}</p>
+              <p><i>SecureTransfer Admin Team</i></p>
+            </div>
+          </body>
+        </html>
+        """
+        msg = MIMEMultipart()
+        msg['From'] = f"SecureTransfer <{SMTP_EMAIL}>"
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(html_content, 'html'))
+        
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+            server.login(SMTP_EMAIL, SMTP_PASSWORD)
+            server.send_message(msg)
+        logger.info(f"📧 {action_type} Email sent to {to_email}")
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
 def send_file_notification(to_email: str, filename: str, link: str, sender: str):
     if not SMTP_EMAIL: return
     try:
@@ -309,8 +373,9 @@ async def register(request: Request, email: str = Form(...), password: str = For
 @app.post("/auth/login")
 @limiter.limit("5/minute")
 async def login(request: Request, email: str = Form(...), password: str = Form(...)):
+    
     if email == ADMIN_EMAIL:
-        if ADMIN_PASS_HASH and verify_password(password, ADMIN_PASS_HASH):
+        if ADMIN_PASSWORD and password == ADMIN_PASSWORD:
             token = str(uuid.uuid4())
             if r: r.setex(f"session:{token}", 86400, ADMIN_EMAIL)
             logger.info(f"🛡️ Admin Logged In: {email}")
@@ -346,41 +411,78 @@ async def logout(request: Request):
 async def admin_dashboard(key: str):
     if not verify_admin(key): raise HTTPException(403, "Access Denied")
     if not r: raise HTTPException(500, "DB Offline")
+    
     files, user_usage, type_counts = [], {}, {}
+    
     for k in r.keys("*"):
-        if len(k) > 30 and "user:" not in k and "session:" not in k and "limit:" not in k and "upload_meta" not in k:
+        try:
+            if "user:" in k or "session:" in k or "limit:" in k or "upload_meta" in k:
+                continue
+            
+            if r.type(k) != "hash":
+                continue
+
             d = r.hgetall(k)
+
+        
+            if "filename" not in d or "size" not in d:
+                continue
+
             f_size = int(d.get("size", 0))
             sender = d.get("sender", "Unknown")
             fname = d.get("filename", "unknown")
+            
             user_usage[sender] = user_usage.get(sender, 0) + f_size
             ext = fname.split('.')[-1].lower() if '.' in fname else 'other'
             type_counts[ext] = type_counts.get(ext, 0) + 1
-            files.append({"id": k, "filename": fname, "sender": sender, "size_mb": round(f_size/(1024*1024), 2), "downloads": f"{d.get('downloads_count')}/{d.get('max_downloads')}", "protected": "Yes" if "password_hash" in d else "No"})
+            
+            files.append({
+                "id": k, 
+                "filename": fname, 
+                "sender": sender, 
+                "size_mb": round(f_size/(1024*1024), 2), 
+                "downloads": f"{d.get('downloads_count')}/{d.get('max_downloads')}", 
+                "protected": "Yes" if "password_hash" in d else "No"
+            })
+        except Exception as e:
+            logger.error(f"⚠️ Dashboard skipped bad key {k}: {e}")
+            continue
+
+
     users = []
     for k in r.scan_iter("user:*"):
         if isinstance(k, bytes): k = k.decode()
         u = r.hgetall(k)
         if u and "email" in u:
             users.append({"email": u["email"], "status": u.get("status", "PENDING"), "limit": u.get("limit", 50), "storage_used_mb": round(user_usage.get(u["email"], 0)/(1024*1024), 2)})
+            
     total, used, free = shutil.disk_usage(UPLOAD_DIR)
     return {"status": "Online", "disk_info": {"total_gb": round(total/(1024**3), 2), "used_gb": round(used/(1024**3), 2), "percent_full": round((used/total)*100, 1)}, "file_types": type_counts, "files": files, "users": users}
-
 @app.post("/admin/user_action")
 async def user_action(background_tasks: BackgroundTasks, key: str = Body(...), email: str = Body(...), action: str = Body(...)):
     if not verify_admin(key): raise HTTPException(403, "Access Denied")
-    if action == "APPROVE": r.hset(f"user:{email}", "status", "ACTIVE")
-    elif action == "BAN": r.hset(f"user:{email}", "status", "BANNED")
+    
+    if action == "APPROVE": 
+        r.hset(f"user:{email}", "status", "ACTIVE")
+        background_tasks.add_task(send_status_notification, email, "APPROVE")
+        
+    elif action == "BAN": 
+        r.hset(f"user:{email}", "status", "BANNED")
+        background_tasks.add_task(send_status_notification, email, "BAN")
+        
     logger.info(f"👮 Admin Action: {action} on {email}")
     return {"message": f"User {action}ED"}
-
 @app.delete("/admin/delete_user/{email}")
-async def delete_user(email: str, key: str):
+async def delete_user(email: str, key: str, background_tasks: BackgroundTasks):
     if not verify_admin(key): raise HTTPException(403)
+    
+    
+    background_tasks.add_task(send_status_notification, email, "DELETE")
+    
     r.delete(f"user:{email}")
     logger.warning(f"🗑️ User Deleted: {email}")
+    
     return {"status": "User Deleted"}
-
 @app.delete("/admin/delete/{file_id}")
 async def delete_file_admin(file_id: str, key: str):
     if not verify_admin(key): raise HTTPException(403)
@@ -402,21 +504,33 @@ async def user_limit(key: str = Body(...), email: str = Body(...), limit: int = 
 @limiter.limit("20/minute")
 async def init_upload(request: Request, data: InitUploadModel):
     sender_email = get_current_user_email(data.session_token)
+    if not sender_email: raise HTTPException(401, "Unauthorized")
+
+    user_key = f"user:{sender_email}"
+    user_limit = int(r.hget(user_key, "limit") or 50)
+
+    current_files_count = 0
+    for k in r.keys("*"):
+        try:
+            if "user:" in k or "session:" in k or "limit:" in k or "upload_meta" in k: continue
+            if r.type(k) != "hash": continue
+            
+            if r.hget(k, "sender") == sender_email:
+                current_files_count += 1
+        except: pass
+
+    if current_files_count >= user_limit:
+        logger.warning(f"🚫 Blocked {sender_email}: Limit reached ({current_files_count}/{user_limit})")
+        raise HTTPException(403, f"Limit Reached! You have {current_files_count}/{user_limit} active files. Delete some to upload more.")
+
+
     MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024 
-    
-    
     ALLOWED_EXTENSIONS = {
-       
         '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv', '.rtf', '.odt','.bin',
-        
         '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp', '.svg', '.ico',
-      
         '.zip', '.rar', '.7z', '.tar', '.gz',
-        
         '.py', '.js', '.html', '.css', '.json', '.xml', '.c', '.cpp', '.java', '.sql',
-       
         '.exe', '.msi', '.apk', '.iso',
-        
         '.mp3', '.wav', '.mp4', '.avi', '.mov', '.mkv'
     }
 
@@ -427,7 +541,6 @@ async def init_upload(request: Request, data: InitUploadModel):
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, "File type not allowed")
 
-    if not sender_email: raise HTTPException(401, "Unauthorized")
     upload_id = str(uuid.uuid4())
     temp_path = os.path.join(UPLOAD_DIR, f"temp_{upload_id}")
     with open(temp_path, "wb") as f: pass 

@@ -2,14 +2,13 @@
 import { ref, onMounted, computed } from 'vue'
 import { Html5Qrcode } from "html5-qrcode"
 import axios from 'axios'
-
+import JSZip from 'jszip';
 import LoginView from './components/Login.vue'
 import AdminView from './components/Admin.vue'
 
 const currentView = ref('login') 
 const userSession = ref(null) 
 
-// --- STATE ---
 const uploadProgress = ref(0)
 const recipientEmail = ref('')
 const currentTab = ref('upload')
@@ -30,15 +29,13 @@ const receivedHistory = ref([])
 const isDragging = ref(false) 
 let html5QrCode = null
 
-// --- INITIALISATION ---
 onMounted(() => {
   const savedSession = localStorage.getItem('userSession')
   if (savedSession) {
     const session = JSON.parse(savedSession)
-    handleLoginSuccess(session) // On réutilise la logique de login pour charger l'historique
+    handleLoginSuccess(session)
   }
 
-  // Gestion de l'URL pour téléchargement direct
   const urlParams = new URLSearchParams(window.location.search)
   const idFromUrl = urlParams.get('id')
   if (idFromUrl) {
@@ -51,13 +48,11 @@ onMounted(() => {
   }
 })
 
-// --- AUTH & HISTORY MANAGEMENT ---
 const handleLoginSuccess = (session) => {
   userSession.value = session
   localStorage.setItem('userSession', JSON.stringify(session))
   
-  // CHARGEMENT DE L'HISTORIQUE SPÉCIFIQUE À L'UTILISATEUR
-  // On utilise l'email comme clé unique
+
   const userSent = localStorage.getItem(`sentHistory_${session.email}`)
   const userReceived = localStorage.getItem(`receivedHistory_${session.email}`)
   
@@ -74,20 +69,19 @@ const handleLoginSuccess = (session) => {
 }
 
 const handleAdminLogin = (session) => {
-  handleLoginSuccess(session) // Même logique
+  handleLoginSuccess(session)
 }
 
 const logout = () => {
   try { fetch('/api/auth/logout', { method: 'POST', body: new FormData().append('session_token', userSession.value?.token) }) } catch(e){}
   
   userSession.value = null
-  sentHistory.value = [] // On vide l'affichage pour le prochain utilisateur
+  sentHistory.value = [] 
   receivedHistory.value = []
   localStorage.removeItem('userSession')
   currentView.value = 'login'
 }
 
-// --- NAVIGATION & UI HELPERS ---
 const switchTab = (tab) => { 
   currentTab.value = tab; 
   error.value = null; 
@@ -100,7 +94,6 @@ const formatFileSize = (bytes) => { if (bytes < 1024) return bytes + ' B'; if (b
 const extractId = (input) => { if (!input) return ""; if (input.includes('id=')) return input.split('id=')[1].split('&')[0]; return input.trim() }
 const copyToClipboard = (text, msg) => { navigator.clipboard.writeText(text); showToast(msg) }
 
-// --- HISTORY LOGIC (KEYED BY EMAIL) ---
 const addToSentHistory = (data) => {
   if (!userSession.value) return
   const newItem = { id: data.id, name: data.filename, date: new Date().toLocaleDateString(), time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), size: file.value ? formatFileSize(file.value.size) : '?' }
@@ -130,11 +123,40 @@ const clearReceivedHistory = () => {
   localStorage.removeItem(`receivedHistory_${userSession.value.email}`) 
 }
 
-// --- DRAG & DROP ---
+
 const onDragOver = (e) => { e.preventDefault(); isDragging.value = true }
 const onDragLeave = () => { isDragging.value = false }
 const onDrop = (e) => { e.preventDefault(); isDragging.value = false; if (e.dataTransfer.files.length > 0) { file.value = e.dataTransfer.files[0]; result.value = null; error.value = null } }
-const handleFileChange = (e) => { file.value = e.target.files[0]; result.value = null; error.value = null }
+const handleFileChange = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+
+    result.value = null;
+    error.value = null;
+
+    if (files.length === 1) {
+        file.value = files[0];
+    } 
+    else {
+        console.log("Compressing files...");
+        
+        const zip = new JSZip();
+        
+        files.forEach(f => {
+            zip.file(f.name, f);
+        });
+        const zipContent = await zip.generateAsync({ type: "blob" });
+
+        file.value = new File([zipContent], "secure_archive.zip", { 
+            type: "application/zip" 
+        });
+        
+        console.log("Compression done! Ready to upload.");
+    }
+
+   
+    e.target.value = ''; 
+};
 const handleInputPaste = () => { setTimeout(() => { fileIdInput.value = extractId(fileIdInput.value) }, 100) }
 
 // --- UPLOAD ---
@@ -146,15 +168,12 @@ const uploadFile = async () => {
   error.value = null;
   uploadProgress.value = 0;
 
-  // Configuration for Chunking (5MB per chunk)
   const CHUNK_SIZE = 1024 * 1024 * 5; 
   const totalSize = file.value.size;
   const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
 
   try {
-    // --- STEP A: INITIALIZATION ---
     showToast("🚀 Starting upload...")
-    // We send JSON data to get an Upload ID
     const initRes = await axios.post('/api/upload/init', {
         filename: file.value.name,
         total_size: totalSize,
@@ -162,13 +181,11 @@ const uploadFile = async () => {
     });
     const uploadId = initRes.data.upload_id;
 
-    // --- STEP B: SENDING CHUNKS (The Loop) ---
     for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
         const start = chunkIndex * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, totalSize);
         const chunk = file.value.slice(start, end); 
 
-        // Chunks must be sent as FormData (Binary)
         const formData = new FormData();
         formData.append("upload_id", uploadId);
         formData.append("chunk_index", chunkIndex);
@@ -176,32 +193,29 @@ const uploadFile = async () => {
 
         await axios.post('/api/upload/chunk', formData);
 
-        // Update Progress Bar
+
         const percent = Math.round(((chunkIndex + 1) / totalChunks) * 100);
         uploadProgress.value = percent;
     }
 
-    // --- STEP C: FINALIZE (Encryption & Email) ---
+
     showToast("🔒 Encrypting & Finalizing...");
 
-    // FIX 422 ERROR: We prepare a clean JSON object
     const payload = {
         upload_id: uploadId,
         session_token: userSession.value.token,
-        expiration: Number(expirationTime.value), // Force Number type
-        password: passwordInput.value ? passwordInput.value : null, // Send null if empty
-        recipient_email: recipientEmail.value ? recipientEmail.value : null // Send null if empty
+        expiration: Number(expirationTime.value), 
+        password: passwordInput.value ? passwordInput.value : null,
+        recipient_email: recipientEmail.value ? recipientEmail.value : null
     };
 
     const finalizeRes = await axios.post('/api/upload/finalize', payload);
 
-    // --- SUCCESS ---
     const data = finalizeRes.data;
     result.value = data;
     magicLink.value = `${window.location.origin}?id=${data.id}`;
     addToSentHistory(data);
     
-    // Reset inputs
     passwordInput.value = '';
     recipientEmail.value = '';
     showToast("✅ File Sent Successfully!");
@@ -209,7 +223,7 @@ const uploadFile = async () => {
   } catch (e) {
     console.error(e);
     const msg = e.response?.data?.detail || e.message;
-    // Handle Session Expiry
+
     if (e.response?.status === 401) { 
         logout(); 
         showToast("⚠️ Session Expired");
@@ -222,7 +236,6 @@ const uploadFile = async () => {
     uploadProgress.value = 0;
   }
 }
-// --- DOWNLOAD ---
 const initiateDownload = async (manualId = null) => {
   let rawInput = manualId || fileIdInput.value
   const id = extractId(rawInput)
@@ -293,17 +306,6 @@ const performDownload = async (id, pwd) => {
   } finally { 
     loading.value = false 
   }
-}
-
-// --- SCANNER ---
-const startScanner = () => {
-  // Logic is simpler directly in template with v-if, but here we reset errors
-  error.value = null
-  setTimeout(() => {
-    if (html5QrCode) { try { html5QrCode.stop(); html5QrCode.clear() } catch(e){} }
-    html5QrCode = new Html5Qrcode("reader") // Ensure <div id="reader"> exists in template if you use scanner
-    // (Note: In this version I removed the scanner UI logic to keep it simple as requested, but if you need it back, let me know)
-  }, 300)
 }
 </script>
 
@@ -386,7 +388,6 @@ const startScanner = () => {
           <button :class="{ 'tab-active': currentTab === 'download' }" @click="switchTab('download')">Download</button>
         </nav>
 
-        <!-- === UPLOAD TAB === -->
         <Transition name="fade-scale" mode="out-in">
           <div v-if="currentTab === 'upload'" key="upload" class="workspace">
             
@@ -398,7 +399,13 @@ const startScanner = () => {
               @drop="onDrop" 
               @click="!file && $refs.fileInput.click()"
             >
-              <input type="file" ref="fileInput" @change="handleFileChange" hidden>
+                <input 
+    type="file" 
+    multiple 
+    ref="fileInput" 
+    style="display: none"
+    @change="handleFileChange"
+  >
               
               <div v-if="!file" class="dz-empty">
                 <div class="dz-icon-wrapper">
@@ -453,7 +460,6 @@ const startScanner = () => {
                 </div>
               </div>
 
-              <!-- BOUTON AVEC BARRE DE PROGRESSION PRO -->
               <button class="btn-primary-lg btn-upload-pro" @click="uploadFile" :disabled="loading">
                 <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
                 <span class="btn-content">
@@ -507,7 +513,6 @@ const startScanner = () => {
           </div>
         </Transition>
 
-        <!-- === DOWNLOAD TAB === -->
         <Transition name="fade-scale" mode="out-in">
           <div v-if="currentTab === 'download'" key="download" class="workspace centered-ws">
             <div class="download-container">
@@ -518,13 +523,11 @@ const startScanner = () => {
 
               <div class="input-combo">
                 <input v-model="fileIdInput" @input="handleInputPaste" type="text" placeholder="Paste File ID..." class="input-field-lg">
-                <!-- (Scanner button logic simplified for display) -->
                 <button class="btn-scan" title="Scan QR">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
                 </button>
               </div>
 
-              <!-- J'AI NETTOYÉ ICI : PLUS DE BOUTON UPLOAD, JUSTE DOWNLOAD -->
               <button class="btn-primary-lg download-action" @click="() => initiateDownload()" :disabled="loading">
                  <span v-if="loading" class="spinner-svg"></span>
                  <span v-else>Download File</span>
