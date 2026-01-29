@@ -210,20 +210,26 @@ def verify_admin(key: str) -> bool:
         if session_email == ADMIN_EMAIL: return True
     return False
 
-def scan_file_for_virus(content: bytes):
+def scan_file_for_virus(file_obj):
     if not clamd: return
     try:
-        logger.info("🦠 Starting Virus Scan...")
+        logger.info("🦠 Starting Virus Scan (Streaming)...")
         cd = clamd.ClamdNetworkSocket('clamav', 3310)
-        if cd.ping() != 'PONG': return
-        scan_result = cd.instream(io.BytesIO(content))
+        if cd.ping() != 'PONG': 
+            logger.warning("⚠️ ClamAV not responding")
+            return
+        scan_result = cd.instream(file_obj)
+        
         if scan_result and scan_result['stream'][0] == 'FOUND':
             virus_name = scan_result['stream'][1]
             logger.critical(f"🚨 VIRUS DETECTED: {virus_name}")
             raise HTTPException(status_code=400, detail=f"VIRUS DETECTED: {virus_name}")
+            
         logger.info("✅ Virus Scan Clean")
-    except HTTPException as he: raise he
-    except Exception: pass
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.warning(f"⚠️ Virus scan error (skipped): {e}")
 
 def scan_file_content(content: bytes, filename: str):
     logger.info(f"🤖 Starting AI DLP Scan for {filename}...")
@@ -521,7 +527,7 @@ async def init_upload(request: Request, data: InitUploadModel):
 
     if current_files_count >= user_limit:
         logger.warning(f"🚫 Blocked {sender_email}: Limit reached ({current_files_count}/{user_limit})")
-        raise HTTPException(403, f"Limit Reached! You have {current_files_count}/{user_limit} active files. Delete some to upload more.")
+        raise HTTPException(403, f"Limit Reached! You have .")
 
 
     MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024 
@@ -572,26 +578,29 @@ async def finalize_upload(request: Request, background_tasks: BackgroundTasks, d
     logger.info(f"🛡️ Security Scan starting for: {filename}")
     try:
         with open(temp_path, "rb") as f:
-            header_content = f.read(10 * 1024 * 1024) 
-            scan_file_content(header_content, filename) 
-            
             f.seek(0, os.SEEK_END)
             file_size = f.tell()
             f.seek(0)
+
+            if file_size < 300 * 1024 * 1024:
+                logger.info(f"🦠 Starting Virus Scan for {filename}...")
+                scan_file_for_virus(f)
             
-            if file_size < 300 * 1024 * 1024: 
-                content_for_virus = f.read()
-                scan_file_for_virus(content_for_virus)
-            else:
-                logger.warning(f"⏩ Virus scan skipped (Large File): {filename}")
-
-
-        logger.info(f"🔐 Encrypting {filename} (Streaming Mode)...")
+            f.seek(0)
+            header_content = f.read(10 * 1024 * 1024) 
+            scan_file_content(header_content, filename) 
+            f.seek(0) 
+             
+            
+        
+        logger.info(f"🔐 Encrypting {filename}...")
+        
         key = os.urandom(32) 
         final_id = str(uuid.uuid4())
         final_path = os.path.join(UPLOAD_DIR, f"{final_id}.enc")
-        
-        cryptage(temp_path, final_path, key)
+    
+        from fastapi.concurrency import run_in_threadpool
+        await run_in_threadpool(cryptage, temp_path, final_path, key)
             
         os.remove(temp_path)
         r.delete(meta_key)
